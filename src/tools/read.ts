@@ -198,7 +198,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           `🗂 社区 · ${sort === "like" ? "热门" : "最新"} · 第 ${page ?? 1} 页 · 本页 ${posts.length} 条 · 总数约 ${data.len}`,
           data.top ? "（第 1 页含置顶帖，通常是发布时间很早的那条）" : "",
           "",
-          ...posts.slice(0, limit).map(postLine),
+          ...posts.slice(0, limit).map((post, index) => postLine(post, index + 1)),
         ].filter(Boolean);
         if (posts.length > limit) lines.push("", `…还有 ${posts.length - limit} 条未展示（调大 limit 或用 page 翻页）`);
         lines.push(

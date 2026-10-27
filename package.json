@@ -1,7 +1,7 @@
 {
   "name": "noyacg-mcp",
   "version": "0.1.0",
-  "description": "NoyAcg（noymanga.com）MCP server：给 AI agent 用的漫画社区 / 图床 / 签到 / 讯息工具",
+  "description": "noymanga.com 的 MCP server：给 AI agent 用的社区 / 图床 / 签到 / 徽章工具（浏览器登录自动抓 Cookie）",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -21,7 +21,10 @@
     "start": "node dist/index.js",
     "pretest": "npm run build",
     "test": "node --test test/*.test.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "login": "node dist/index.js login",
+    "status": "node dist/index.js status",
+    "logout": "node dist/index.js logout"
   },
   "keywords": [
     "mcp",
@@ -34,6 +37,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "playwright-core": "^1.64.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {

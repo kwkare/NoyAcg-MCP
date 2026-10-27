@@ -2,7 +2,9 @@
 
 [NoyAcg / noymanga.com](https://noymanga.com) 的 **MCP server** —— 让 AI agent 直接看社区、读帖子、查榜单、发帖评论、签到、管徽章。
 
-基于仓库 [NoyAcg-API-Collect](https://github.com/kwkare/NoyAcg-API-Collect) 里逐条实测过的接口契约实现，**TypeScript + stdio**，零配置即可接 Claude Desktop / Cursor / 任何支持 MCP 的宿主。
+基于仓库 [NoyAcg-API-Collect](https://github.com/kwkare/NoyAcg-API-Collect) 里逐条实测过的接口契约实现，**TypeScript + stdio**，接 Claude Desktop / Cursor / 任何支持 MCP 的宿主。
+
+最省事的用法：**配好路径 → 让 agent 弹个浏览器窗口 → 你自己登录 → 完事**。不用翻 DevTools 复制 cookie。
 
 ```text
 你：看看社区今天有什么热闹，挑两条有意思的说给我听
@@ -12,7 +14,8 @@ agent：今天热帖是……（附带评论里在吵什么）
 
 ## 特性
 
-- **15 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
+- **浏览器登录**：`noy_browser_login` 打开独立 Chrome 窗口，用户自己登录，自动抓 `NOY_SESSION` 并保存，**当前进程立刻生效**
+- **16 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
 - **6 个资源**（`noy://`）：主页资料、首页榜单、最新帖、未读数、表情包代码表，可按需加载 / 缓存
 - **2 个提示词模板**：社区速览、评论起草
 - **写操作直接执行 + 审计日志**：每次发帖 / 评论 / 点赞 / 签到 / 徽章变更都追加一行 JSONL
@@ -25,19 +28,39 @@ git clone https://github.com/kwkare/NoyAcg-MCP.git
 cd NoyAcg-MCP
 npm ci
 npm run build
+
+# 登录（会弹出 Chrome，登录一次即可）
+node dist/index.js login
+node dist/index.js status     # 确认会话有效
 ```
 
-要求 Node.js ≥ 18.17。
+要求 Node.js ≥ 18.17，以及 Chrome（或 Edge / `npx playwright install chromium`）。
 
 ## 配置
 
-只需要一个环境变量：站点 Cookie。
+登录态有三种给法，**优先级：环境变量 > 本地会话文件**。
 
-1. 浏览器登录 https://noymanga.com
-2. DevTools → Application → Cookies → `https://noymanga.com` → 复制 **`NOY_SESSION`** 的值（120 字符左右）
-3. 填到宿主的 MCP 配置里
+| 方式 | 怎么做 | 适合 |
+| --- | --- | --- |
+| **A. 浏览器登录**（推荐） | `node dist/index.js login`，或让 agent 调 `noy_browser_login` | 所有人，尤其是懒得碰 DevTools 的 |
+| B. 环境变量 | MCP 配置里写 `NOY_SESSION` | 多账号切换 / 容器 / 服务器 |
+| C. 会话文件 | 直接写 `~/.noyacg-mcp/session.json` | 脚本化部署 |
 
-### Claude Desktop
+### A. 浏览器登录（推荐）
+
+```bash
+node dist/index.js login          # 打开 Chrome，登录后自动保存并关闭
+node dist/index.js login --timeout 120
+```
+
+- 用的是**独立 profile**（`~/.noyacg-mcp/browser`），不会动你日常浏览器的登录态；
+- 登录过一次之后再打开通常已是登录状态，秒完成；
+- Cookie 存到 `~/.noyacg-mcp/session.json`，权限 `0600`；
+- 也可以在对话里让 agent 调 `noy_browser_login`：先 `action=open` 弹窗，登录好后 `action=wait` 保存，**不用重启 MCP**。
+
+> 会话文件里是明文 Cookie，等同账号凭证。别提交到 git、别随手发给别人。
+
+### B. Claude Desktop
 
 `~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）或 `%APPDATA%\Claude\claude_desktop_config.json`（Windows）：
 
@@ -46,14 +69,13 @@ npm run build
   "mcpServers": {
     "noyacg": {
       "command": "node",
-      "args": ["/absolute/path/to/NoyAcg-MCP/dist/index.js"],
-      "env": {
-        "NOY_SESSION": "粘贴 cookie 值"
-      }
+      "args": ["/absolute/path/to/NoyAcg-MCP/dist/index.js"]
     }
   }
 }
 ```
+
+不需要 `env`：登录态从 `~/.noyacg-mcp/session.json` 读。想用环境变量覆盖，就再加 `"env": { "NOY_SESSION": "..." }`（见 `examples/claude_desktop_config.cookie.json`）。
 
 ### Cursor / 其它
 
@@ -63,7 +85,12 @@ npm run build
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `NOY_SESSION` | — | **必填**，站点 Cookie 的值（也可以粘贴整段 `NOY_SESSION=xxx`） |
+| `NOY_SESSION` | — | 站点 Cookie 的值（也可以粘贴整段 `NOY_SESSION=xxx`）；**优先级最高** |
+| `NOY_SESSION_FILE` | `~/.noyacg-mcp/session.json` | 本地会话文件路径 |
+| `NOY_BROWSER` | 自动探测 | 指定浏览器通道：`chrome` / `msedge` / `chromium` |
+| `NOY_BROWSER_PROFILE` | `~/.noyacg-mcp/browser` | 浏览器登录用的独立 profile 目录 |
+| `NOY_BROWSER_HEADLESS` | `false` | 无头模式（服务器 / CI） |
+| `NOY_DISABLE_BROWSER_LOGIN` | `false` | `true` 时不注册 `noy_browser_login`（无桌面环境） |
 | `NOY_ALLOW_ADULT` | `false` | 内容分级默认值；工具参数 `adult` 可逐次覆盖 |
 | `NOY_READONLY` | `false` | `true` 时**只注册只读工具**，写操作从工具列表里消失 |
 | `NOY_AUDIT_LOG` | `~/.noyacg-mcp/audit.jsonl` | 写操作审计日志；设成 `off` 关闭 |
@@ -87,6 +114,12 @@ npm run build
 | `noy_inbox` | 未读数 / 书籍评论回覆 / 社區回覆 / 系統訊息 | `kind`、`page`、`limit` |
 | `noy_signin_status` | 今天签没签、连续天数 | — |
 | `noy_list_badges` | 徽章全集 + 佩戴状态（真实 ID 在这里） | — |
+
+### 登录
+
+| 工具 | 作用 | 说明 |
+| --- | --- | --- |
+| `noy_browser_login` | 打开浏览器让用户登录，自动抓 Cookie 并保存 | `action=open\|wait\|cancel`；独立 profile，不影响日常浏览器；保存后**立即生效** |
 
 ### 写操作（**直接生效，无二次确认**）
 
@@ -120,6 +153,7 @@ npm run build
 
 **这个 MCP 会真的操作你的账号。** 设计上的护栏：
 
+- **Cookie 只存在本地**：`~/.noyacg-mcp/session.json`（0600）与独立浏览器 profile；登录过程不经过第三方，密码直接输在 noymanga 的页面上
 - **写操作直接执行**（按需求如此），但每次都会写审计日志：`ts / tool / args / ok / result`，Cookie 与 token 自动打码
 - `NOY_READONLY=true` 可以一键把写工具从工具列表里摘掉，只留只读
 - `noy_like_post` / `noy_set_badge` 都是「先读当前状态 → 需要才调」，避免重复调用把自己翻转回去
@@ -139,15 +173,17 @@ npm run build
 
 ```bash
 npm run build      # tsc
-npm test           # 单元 + 集成（内置假站点，不碰真实站点）
+npm test           # 单元 + 集成（内置假站点 + headless Chrome，不碰真实站点）
 npm run smoke      # 真正拉起 stdio server 走一遍 JSON-RPC
+node dist/index.js status   # 检查真实登录态
 ```
 
-测试分三层：
+测试分四层（36 个用例）：
 
-1. `test/client.test.mjs`：HTTP 客户端（编码、Cookie、分级头、错误映射、multipart）
-2. `test/tools.test.mjs` + `test/mock-site.mjs`：**完整 MCP 协议**跑 15 个工具，含发帖 / 评论 / 点赞 / 签到 / 徽章等写流程（对假站点，不会产生真实内容）
-3. `scripts/smoke.mjs`：未登录状态下的工具清单、资源、提示词、错误提示
+1. `test/client.test.mjs`：HTTP 客户端（编码、Cookie、分级头、错误映射、multipart、图片 URL 拼接）
+2. `test/tools.test.mjs` + `test/mock-site.mjs`：**完整 MCP 协议**跑全部工具，含发帖 / 评论 / 点赞 / 签到 / 徽章等写流程（对假站点，不会产生真实内容）
+3. `test/session.test.mjs` + `test/browser-login.test.mjs`：会话文件读写与权限、headless Chrome 上的真实登录流程（抓 cookie → 校验 → 落盘）、MCP 工具端到端；本机没有浏览器时自动 skip
+4. `scripts/smoke.mjs`：未登录状态下的工具清单、资源、提示词、错误提示
 
 接口契约以 [NoyAcg-API-Collect](https://github.com/kwkare/NoyAcg-API-Collect) 的 `docs/` 为准；那边是人工实测记录，这边是它的可执行封装。
 

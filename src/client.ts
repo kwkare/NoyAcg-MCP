@@ -322,6 +322,8 @@ export class NoyClient {
   bucketImageUrl(relative: string | undefined | null): string | null {
     if (!relative) return null;
     if (/^https?:\/\//i.test(relative)) return relative;
-    return `${this.cfg.bucketUrl}/image/${relative.replace(/^\/+/, "")}`;
+    // 帖子里的 image 字段已经是 `image/xxx.webp`，不要再拼一次 /image/
+    const path = relative.replace(/^\/+/, "").replace(/^image\//, "");
+    return `${this.cfg.bucketUrl}/image/${path}`;
   }
 }

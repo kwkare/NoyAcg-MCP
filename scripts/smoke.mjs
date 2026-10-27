@@ -71,6 +71,7 @@ const EXPECTED_TOOLS = [
   "noy_like_post",
   "noy_checkin",
   "noy_set_badge",
+  "noy_browser_login",
 ];
 
 try {

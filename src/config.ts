@@ -22,6 +22,20 @@ export interface Config {
   readonly: boolean;
   /** 是否允许暴露账号密码登录工具（默认关闭） */
   allowPasswordLogin: boolean;
+  /** 本地会话文件（浏览器登录后写这里） */
+  sessionFile: string;
+  /** 当前 session 从哪来：环境变量 / 本地文件 */
+  sessionSource: "env" | "file" | null;
+  /** 从本地文件读到时的元信息（uid / username / savedAt） */
+  sessionMeta?: { uid?: number; username?: string; savedAt?: string };
+  /** 浏览器登录用的独立 profile 目录 */
+  browserProfile: string;
+  /** 指定浏览器通道（chrome / msedge / chromium），不指定则自动探测 */
+  browserChannel?: string;
+  /** 浏览器登录是否无头（一般只有 CI 用） */
+  browserHeadless: boolean;
+  /** 是否注册 noy_browser_login 工具；无桌面环境可关掉 */
+  browserLoginEnabled: boolean;
 }
 
 function bool(value: string | undefined, fallback = false): boolean {
@@ -52,7 +66,8 @@ export function normalizeSession(raw: string | undefined): string | null {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const defaultAudit = join(homedir(), ".noyacg-mcp", "audit.jsonl");
+  const home = join(homedir(), ".noyacg-mcp");
+  const defaultAudit = join(home, "audit.jsonl");
   const auditSetting = env.NOY_AUDIT_LOG;
   const auditLog =
     auditSetting === undefined
@@ -72,5 +87,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     auditLog,
     readonly: bool(env.NOY_READONLY, false),
     allowPasswordLogin: bool(env.NOY_ALLOW_PASSWORD_LOGIN, false),
+    sessionFile: env.NOY_SESSION_FILE?.trim() || join(home, "session.json"),
+    sessionSource: env.NOY_SESSION?.trim() ? "env" : null,
+    browserProfile: env.NOY_BROWSER_PROFILE?.trim() || join(home, "browser"),
+    browserChannel: env.NOY_BROWSER?.trim() || undefined,
+    browserHeadless: bool(env.NOY_BROWSER_HEADLESS, false),
+    browserLoginEnabled: !bool(env.NOY_DISABLE_BROWSER_LOGIN, false),
   };
 }

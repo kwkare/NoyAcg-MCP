@@ -2,11 +2,7 @@
   "mcpServers": {
     "noyacg": {
       "command": "node",
-      "args": ["/absolute/path/to/NoyAcg-MCP/dist/index.js"],
-      "env": {
-        "NOY_SESSION": "把浏览器里 NOY_SESSION 的值粘到这里",
-        "NOY_READONLY": "false"
-      }
+      "args": ["/absolute/path/to/NoyAcg-MCP/dist/index.js"]
     }
   }
 }
