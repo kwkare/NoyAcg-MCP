@@ -259,8 +259,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           }
         } else if (comments.length === 0) {
           lines.push("", "（还没有评论）");
+        } else if (comment_limit === 0) {
+          lines.push("", `（本页共 ${comments.length} 条评论，已按参数跳过；用 comment_limit 查看）`);
         }
-        if (comments.length > comment_limit) {
+        if (comment_limit > 0 && comments.length > comment_limit) {
           lines.push("", `（本页共 ${comments.length} 条评论，还有 ${comments.length - comment_limit} 条未展示：调大 comment_limit）`);
         }
 

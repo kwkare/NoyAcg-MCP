@@ -131,6 +131,12 @@ describe("tools 集成（假站点）", () => {
     assert.match(text, /noy_comment/);
   });
 
+  it("noy_read_post：comment_limit=0 时只看帖子，不误报「没有评论」", async () => {
+    const { text } = await server.call("noy_read_post", { post_id: 78930, comment_limit: 0 });
+    assert.doesNotMatch(text, /（还没有评论）/);
+    assert.match(text, /已按参数跳过/);
+  });
+
   it("noy_comment：发顶层评论并回读 rid", async () => {
     const { text, isError } = await server.call("noy_comment", { post_id: 78930, text: "测试评论 [noygirl:yeah]" });
     assert.equal(isError, false, text);
