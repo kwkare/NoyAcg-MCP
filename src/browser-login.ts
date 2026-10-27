@@ -5,10 +5,11 @@ import { NoyError } from "./errors.js";
  * 登录成功后从浏览器上下文里读 `NOY_SESSION` Cookie。
  *
  * 设计取舍：
- * - 用 `launchPersistentContext` + 独立 profile：登录态会留在
- *   `~/.noyacg-mcp/browser`，下次打开直接是已登录状态，秒取 cookie；
+ * - 用 `launchPersistentContext` + 独立 profile：登录态留在
+ *   `~/.noyacg-mcp/browser`，第二次打开直接命中，**不再弹窗**；
+ * - 先跑一次 headless 探测（约 1 秒）判断是否已登录，成功就直接复用；
  * - 不去读系统 Chrome 的 Cookies 数据库（要解 keychain，跨平台且脆弱）；
- * - 不碰用户日常浏览器 profile，避免「打开一次就把你正在浏览的窗口接管了」。
+ * - 不碰用户日常浏览器 profile。
  */
 
 export interface BrowserLoginOptions {
@@ -26,16 +27,25 @@ export interface BrowserLoginResult {
   uid?: number;
   username?: string;
   channel: string;
+  /** true = 复用 profile 里已有的登录态，没有让用户重新登录 */
+  reused: boolean;
 }
 
 export interface LoginHandle {
   /** 让宿主/测试能拿到页面对象，便于截图或调试 */
   readonly page: any;
   readonly channel: string;
+  /** 是否直接复用了已有登录态（此时窗口可能根本没弹出来） */
+  readonly reused: boolean;
   readonly closed: boolean;
   /** 可以重复调用：超时不会关浏览器，可以再等一次 */
   wait(timeoutMs: number): Promise<BrowserLoginResult>;
   close(): Promise<void>;
+}
+
+interface Launched {
+  context: any;
+  channel: string;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -72,58 +82,118 @@ async function verifyCookie(baseUrl: string, cookie: string): Promise<{ uid?: nu
   }
 }
 
-export async function openLoginBrowser(options: BrowserLoginOptions): Promise<LoginHandle> {
-  const { chromium } = await loadPlaywright();
-  const candidates = options.channel ? [options.channel] : ["chrome", "msedge", ""];
-  const failures: string[] = [];
-  let context: any = null;
-  let usedChannel = "";
+/** 读 profile 里的 NOY_SESSION 并校验，返回有效账号 */
+async function readValidSession(
+  context: any,
+  baseUrl: string,
+): Promise<{ cookie: string; uid?: number; username?: string } | null> {
+  const cookies: { name: string; value: string }[] = await context.cookies(baseUrl);
+  const session = cookies
+    .filter((c) => c.name === "NOY_SESSION" && c.value.length >= 40)
+    .sort((a, b) => b.value.length - a.value.length)[0];
+  if (!session) return null;
+  const account = await verifyCookie(baseUrl, session.value);
+  if (!account) return null;
+  return { cookie: session.value, ...account };
+}
 
-  for (const channel of candidates) {
+/** 在页面顶部浮一条提示，让用户知道「不用你了，已经登录好了」 */
+async function showToast(page: any, text: string): Promise<void> {
+  const script = `(() => {
+    const el = document.createElement('div');
+    el.textContent = ${JSON.stringify(text)};
+    el.setAttribute('data-noyacg-mcp', 'toast');
+    el.style.cssText = ${JSON.stringify(
+      [
+        "position:fixed",
+        "z-index:2147483647",
+        "top:18px",
+        "left:50%",
+        "transform:translateX(-50%)",
+        "padding:12px 22px",
+        "border-radius:999px",
+        "background:#12b886",
+        "color:#fff",
+        "font:600 14px/1.4 system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif",
+        "box-shadow:0 10px 30px rgba(0,0,0,.25)",
+        "pointer-events:none",
+      ].join(";"),
+    )};
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  })()`;
+  await page.evaluate(script).catch(() => undefined);
+}
+
+async function tryLaunch(
+  chromium: any,
+  options: BrowserLoginOptions,
+  headless: boolean,
+  channels: string[],
+  failures: string[],
+): Promise<Launched | null> {
+  for (const channel of channels) {
     try {
-      context = await chromium.launchPersistentContext(options.profileDir, {
-        headless: options.headless ?? false,
+      const context = await chromium.launchPersistentContext(options.profileDir, {
+        headless,
         channel: channel || undefined,
         viewport: null,
         locale: "zh-CN",
+        // 兜底：任何情况下都不要卡住不动
+        timeout: 30_000,
         args: ["--start-maximized", "--no-first-run", "--no-default-browser-check"],
       });
-      usedChannel = channel || "bundled-chromium";
-      break;
+      return { context, channel: channel || "bundled-chromium" };
     } catch (err) {
-      failures.push(`${channel || "bundled-chromium"}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
+      failures.push(
+        `${channel || "bundled-chromium"}${headless ? " (headless)" : ""}: ${
+          err instanceof Error ? err.message.split("\n")[0] : String(err)
+        }`,
+      );
     }
   }
+  return null;
+}
 
-  if (!context) {
-    throw new NoyError(
-      [
-        "没能启动浏览器（Chrome / Edge 都没找到）。",
-        "解决办法（任选其一）：",
-        "1. 安装 Google Chrome 后重试；",
-        "2. 在本项目里执行 `npx playwright install chromium` 下载内置浏览器；",
-        "3. 用 `NOY_BROWSER=msedge` 指定 Edge。",
-        "",
-        "启动失败详情：",
-        ...failures.map((line) => `- ${line}`),
-      ].join("\n"),
-    );
-  }
+function browserHelp(failures: string[]): NoyError {
+  return new NoyError(
+    [
+      "没能启动浏览器（Chrome / Edge 都没找到）。",
+      "解决办法（任选其一）：",
+      "1. 安装 Google Chrome 后重试；",
+      "2. 在本项目里执行 `npx playwright install chromium` 下载内置浏览器；",
+      "3. 用 `NOY_BROWSER=msedge` 指定 Edge。",
+      "",
+      "启动失败详情：",
+      ...failures.map((line) => `- ${line}`),
+    ].join("\n"),
+  );
+}
 
-  const page = context.pages()[0] ?? (await context.newPage());
-  await page.goto(`${options.baseUrl}/user`, { waitUntil: "domcontentloaded" }).catch(() => undefined);
-  await page.bringToFront().catch(() => undefined);
-  options.onStatus?.(`已打开 ${usedChannel}，请在窗口里登录 noymanga.com`);
-
+function makeHandle(
+  context: any,
+  channel: string,
+  prefetched: { cookie: string; uid?: number; username?: string } | null,
+  options: BrowserLoginOptions,
+): LoginHandle {
   let closed = false;
-  const handle: LoginHandle = {
+  let consumed = prefetched === null;
+  const page = context.pages()[0] ?? null;
+
+  return {
     page,
-    channel: usedChannel,
+    channel,
+    reused: prefetched !== null,
     get closed() {
       return closed;
     },
     async wait(timeoutMs: number): Promise<BrowserLoginResult> {
+      if (prefetched && !consumed) {
+        consumed = true;
+        return { ...prefetched, channel, reused: true };
+      }
       if (closed) throw new NoyError("浏览器窗口已经关了，请重新打开登录");
+
       const deadline = Date.now() + timeoutMs;
       let invalidSeen = false;
 
@@ -135,10 +205,9 @@ export async function openLoginBrowser(options: BrowserLoginOptions): Promise<Lo
 
         if (session) {
           const account = await verifyCookie(options.baseUrl, session.value);
-          if (account) {
-            return { cookie: session.value, uid: account.uid, username: account.username, channel: usedChannel };
-          }
-          // 有可能是上一任账号留下的失效 cookie：清掉，继续等用户登录
+          if (account) return { cookie: session.value, ...account, channel, reused: false };
+
+          // 可能是上一任账号留下的失效 cookie：清掉再等用户登录
           if (!invalidSeen) {
             invalidSeen = true;
             options.onStatus?.("检测到无效的旧 cookie，已清除，继续等待登录");
@@ -153,9 +222,48 @@ export async function openLoginBrowser(options: BrowserLoginOptions): Promise<Lo
     async close() {
       if (closed) return;
       closed = true;
-      await context.close().catch(() => undefined);
+      // 浏览器偶发卡在关闭上：最多等 10 秒，不阻塞调用方
+      await Promise.race([
+        context.close().catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 10_000)),
+      ]);
     },
   };
+}
 
-  return handle;
+export async function openLoginBrowser(options: BrowserLoginOptions): Promise<LoginHandle> {
+  const { chromium } = await loadPlaywright();
+  const headless = options.headless ?? false;
+  const channels = options.channel ? [options.channel] : ["chrome", "msedge", ""];
+  const failures: string[] = [];
+
+  // 1) 已登录就直接复用：先用 headless 探一下 profile（用户看不到窗口）
+  if (!headless) {
+    const probe = await tryLaunch(chromium, options, true, channels, failures);
+    if (probe) {
+      const existing = await readValidSession(probe.context, options.baseUrl);
+      if (existing) {
+        const page = probe.context.pages()[0] ?? (await probe.context.newPage());
+        await page.goto(`${options.baseUrl}/user`, { waitUntil: "domcontentloaded", timeout: 20_000 }).catch(() => undefined);
+        await showToast(page, `✅ 已登录：${existing.username ?? "当前账号"}，正在保存会话…`);
+        options.onStatus?.("检测到已登录，直接复用（不会弹窗）");
+        return makeHandle(probe.context, probe.channel, existing, options);
+      }
+      await Promise.race([
+        probe.context.close().catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 10_000)),
+      ]);
+    }
+  }
+
+  // 2) 没登录：正常打开（默认有头）窗口让用户操作
+  const launched = await tryLaunch(chromium, options, headless, channels, failures);
+  if (!launched) throw browserHelp(failures);
+
+  const page = launched.context.pages()[0] ?? (await launched.context.newPage());
+  await page.goto(`${options.baseUrl}/user`, { waitUntil: "domcontentloaded", timeout: 20_000 }).catch(() => undefined);
+  await page.bringToFront().catch(() => undefined);
+  options.onStatus?.(`已打开 ${launched.channel}，请在窗口里登录 noymanga.com`);
+
+  return makeHandle(launched.context, launched.channel, null, options);
 }

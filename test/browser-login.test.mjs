@@ -131,6 +131,32 @@ describe("浏览器登录（headless Chrome）", () => {
     assert.equal(handle.closed, true);
   });
 
+  it("profile 已登录时直接复用，不弹窗", async (t) => {
+    if (!available) return t.skip(`本机没有可用浏览器：${skipReason}`);
+    // 复用第一个用例留下的 profile（里面已经有 NOY_SESSION）
+    const started = Date.now();
+    let handle;
+    try {
+      handle = await openLoginBrowser({
+        baseUrl: autoSite.base,
+        profileDir: join(dir, "auto"),
+        headless: false, // 关键：有头模式下也应该是「探测到已登录 → 不弹窗」
+        pollMs: 200,
+      });
+    } catch (err) {
+      return t.skip(`无图形环境，跳过有头复用测试：${err instanceof Error ? err.message.split("\n")[0] : err}`);
+    }
+    try {
+      assert.equal(handle.reused, true, "应该标记为复用");
+      const result = await handle.wait(1000);
+      assert.equal(result.reused, true);
+      assert.equal(result.username, "测试用户");
+      assert.ok(Date.now() - started < 30_000);
+    } finally {
+      await handle.close();
+    }
+  });
+
   it("MCP 工具 noy_browser_login 能完成整条链路", async (t) => {
     if (!available) return t.skip(`本机没有可用浏览器：${skipReason}`);
     const sessionFile = join(dir, "mcp-session.json");

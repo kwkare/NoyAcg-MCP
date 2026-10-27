@@ -79,7 +79,11 @@ export async function runCli(argv: string[]): Promise<number> {
         cfg,
       );
 
-      console.log(`\n✅ 登录成功：${result.username}（UID ${result.uid}）`);
+      console.log(
+        result.reused
+          ? `\n✅ 检测到已有登录态，直接复用：${result.username}（UID ${result.uid}）`
+          : `\n✅ 登录成功：${result.username}（UID ${result.uid}）`,
+      );
       console.log(`   会话文件：${path}（权限 0600）`);
       console.log(`\n接下来：MCP 客户端里不用再填 NOY_SESSION 了，直接重启客户端即可。`);
       if (process.env.NOY_SESSION) {

@@ -89,6 +89,7 @@ describe("tools 集成（假站点）", () => {
       NOY_BASE_URL: site.base,
       NOY_BUCKET_URL: site.base,
       NOY_AUDIT_LOG: auditPath,
+      NOY_SESSION_FILE: join(workDir, "session.json"),
       NOY_TIMEOUT_MS: "5000",
     });
   });
@@ -233,6 +234,20 @@ describe("tools 集成（假站点）", () => {
     assert.match(community.text, /@other/);
     assert.match(community.text, /《图》/);
     assert.match(community.text, /不全是别人回复我/);
+  });
+
+  it("noy_logout(revoke=true)：吊销服务端会话并清空当前登录态", async () => {
+    const out = await server.call("noy_logout", { revoke: true });
+    assert.equal(out.isError, false, out.text);
+    assert.match(out.text, /已登出，并已吊销服务端会话/);
+    assert.ok(
+      site.state.calls.some((c) => c.path === "/api/logout"),
+      "应该真的调用了 /api/logout",
+    );
+
+    const after = await server.call("noy_whoami");
+    assert.equal(after.isError, true, "登出后读接口应该要求重新登录");
+    assert.match(after.text, /需要登录/);
   });
 
   it("写操作落审计日志（不含会话 cookie）", async () => {

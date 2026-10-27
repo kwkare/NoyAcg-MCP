@@ -85,6 +85,13 @@ export async function startMockSite() {
     const body = await readBody(req);
     state.calls.push({ path, body });
 
+    // 需要登录的端点：没 cookie 一律 status=login（和真站点一致）
+    const authed = String(req.headers.cookie ?? "").includes("NOY_SESSION=");
+    const publicPaths = new Set(["/api/logout", "/api/upload_image"]);
+    if (!authed && path.startsWith("/api/") && !publicPaths.has(path)) {
+      return json(res, { status: "login" });
+    }
+
     // ---------------------------------------------------------------- 用户
     if (path === "/api/v3/userinfo") {
       return json(res, {
@@ -311,6 +318,8 @@ export async function startMockSite() {
       }
       return json(res, { status: "ok", sysmsg: { count: 0, len: 0, msg: [] } });
     }
+
+    if (path === "/api/logout") return json(res, { status: "logout" });
 
     // ---------------------------------------------------------------- 图床
     if (path === "/api/get_image_bucket_token") return json(res, { status: "ok", token: "tok-123==" });

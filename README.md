@@ -15,7 +15,7 @@ agent：今天热帖是……（附带评论里在吵什么）
 ## 特性
 
 - **浏览器登录**：`noy_browser_login` 打开独立 Chrome 窗口，用户自己登录，自动抓 `NOY_SESSION` 并保存，**当前进程立刻生效**
-- **16 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
+- **17 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
 - **6 个资源**（`noy://`）：主页资料、首页榜单、最新帖、未读数、表情包代码表，可按需加载 / 缓存
 - **2 个提示词模板**：社区速览、评论起草
 - **写操作直接执行 + 审计日志**：每次发帖 / 评论 / 点赞 / 签到 / 徽章变更都追加一行 JSONL
@@ -54,7 +54,8 @@ node dist/index.js login --timeout 120
 ```
 
 - 用的是**独立 profile**（`~/.noyacg-mcp/browser`），不会动你日常浏览器的登录态；
-- 登录过一次之后再打开通常已是登录状态，秒完成；
+- 登录过一次之后再打开：先 headless 探测（约 2 秒），命中就**直接复用、不弹窗**，并保存会话；
+- 想换账号：`noy_logout` 再 `login`；想彻底作废这个 cookie：`noyacg-mcp logout --revoke`；
 - Cookie 存到 `~/.noyacg-mcp/session.json`，权限 `0600`；
 - 也可以在对话里让 agent 调 `noy_browser_login`：先 `action=open` 弹窗，登录好后 `action=wait` 保存，**不用重启 MCP**。
 
@@ -119,7 +120,8 @@ node dist/index.js login --timeout 120
 
 | 工具 | 作用 | 说明 |
 | --- | --- | --- |
-| `noy_browser_login` | 打开浏览器让用户登录，自动抓 Cookie 并保存 | `action=open\|wait\|cancel`；独立 profile，不影响日常浏览器；保存后**立即生效** |
+| `noy_browser_login` | 打开浏览器让用户登录，自动抓 Cookie 并保存 | `action=open\|wait\|cancel`；独立 profile；**登录过就直接复用、不弹窗**；保存后立即生效 |
+| `noy_logout` | 清除本地登录态 | 默认只清本地；`revoke=true` 会调 `/api/logout` **吊销服务端会话**（不可逆） |
 
 ### 写操作（**直接生效，无二次确认**）
 
@@ -173,7 +175,7 @@ node dist/index.js login --timeout 120
 
 ```bash
 npm run build      # tsc
-npm test           # 单元 + 集成（内置假站点 + headless Chrome，不碰真实站点）
+npm test           # 38 个用例：单元 + 集成（内置假站点 + headless Chrome，不碰真实站点）
 npm run smoke      # 真正拉起 stdio server 走一遍 JSON-RPC
 node dist/index.js status   # 检查真实登录态
 ```

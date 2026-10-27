@@ -7,10 +7,19 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const child = spawn(process.execPath, ["dist/index.js"], {
   stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, NOY_SESSION: "", NOY_AUDIT_LOG: "", NOY_ALLOW_ADULT: "" },
+  // 指向一个不存在的会话文件：保证「未登录」状态，不受本机真实登录态影响
+  env: {
+    ...process.env,
+    NOY_SESSION: "",
+    NOY_SESSION_FILE: join(tmpdir(), "noyacg-mcp-smoke-no-session.json"),
+    NOY_AUDIT_LOG: "",
+    NOY_ALLOW_ADULT: "",
+  },
 });
 
 let buffer = "";
@@ -72,6 +81,7 @@ const EXPECTED_TOOLS = [
   "noy_checkin",
   "noy_set_badge",
   "noy_browser_login",
+  "noy_logout",
 ];
 
 try {
