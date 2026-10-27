@@ -230,7 +230,14 @@ function makeHandle(
       let invalidSeen = false;
 
       while (Date.now() < deadline) {
-        const cookies: { name: string; value: string }[] = await context.cookies(options.baseUrl);
+        let cookies: { name: string; value: string }[];
+        try {
+          cookies = await context.cookies(options.baseUrl);
+        } catch {
+          // 浏览器被手动关掉 / 进程被杀：标记失效，让上层丢掉这个句柄重开
+          closed = true;
+          throw new NoyError("浏览器窗口已经关闭（可能被手动关掉或进程退出），请重新调用登录。");
+        }
         const session = cookies
           .filter((c) => c.name === "NOY_SESSION" && c.value.length >= 40)
           .sort((a, b) => b.value.length - a.value.length)[0];

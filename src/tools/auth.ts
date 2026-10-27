@@ -137,17 +137,23 @@ export function registerAuthTools(server: McpServer, ctx: ToolContext): void {
           ].join("\n");
         }
 
-        const result = await active.handle
-          .wait(timeout_seconds * 1000)
-          .catch((err) => {
-            const message = err instanceof Error ? err.message : String(err);
-            if (message.includes("等待登录超时")) {
-              throw new NoyError(
-                `${message} 浏览器窗口仍开着，用户在窗口里完成登录后，再调一次 noy_browser_login(action="wait") 即可。`,
-              );
-            }
-            throw err;
-          });
+        const result = await active.handle.wait(timeout_seconds * 1000).catch(async (err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          // 句柄已经死了（窗口被关、浏览器崩了）：丢掉它，下次调用重新开一个
+          if (active?.handle.closed) {
+            await active.handle.close().catch(() => undefined);
+            active = null;
+          }
+          if (message.includes("等待登录超时")) {
+            throw new NoyError(
+              `${message} 浏览器窗口仍开着，用户在窗口里完成登录后，再调一次 noy_browser_login(action="wait") 即可。`,
+            );
+          }
+          if (message.includes("已经关闭")) {
+            throw new NoyError(`${message} 已丢弃失效的窗口，重新调用 noy_browser_login 即可。`);
+          }
+          throw err;
+        });
 
         const savedAt = new Date().toISOString();
         const path = await writeStoredSession(
