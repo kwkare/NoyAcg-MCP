@@ -54,6 +54,8 @@ export async function startMockSite() {
         platform: "web",
       },
     ],
+    avatar: "avatar/12345-old.webp",
+    bg: "bg/12345-old.webp",
     nextPostId: 79000,
     nextRid: 500000,
     today: false,
@@ -87,7 +89,7 @@ export async function startMockSite() {
 
     // 需要登录的端点：没 cookie 一律 status=login（和真站点一致）
     const authed = String(req.headers.cookie ?? "").includes("NOY_SESSION=");
-    const publicPaths = new Set(["/api/logout", "/api/upload_image"]);
+    const publicPaths = new Set(["/api/logout", "/api/upload_image", "/api/upload_avatar", "/api/upload_bg"]);
     if (!authed && path.startsWith("/api/") && !publicPaths.has(path)) {
       return json(res, { status: "login" });
     }
@@ -103,8 +105,8 @@ export async function startMockSite() {
           Uhash: "12345a",
           Uid: state.uid,
           Username: state.username,
-          Avatar: "avatar/12345-x.webp",
-          Bg: "bg/12345-x.webp",
+          Avatar: state.avatar,
+          Bg: state.bg,
           CommentLen: 0,
           Badge: state.badges.map((b) => ({ ...b, Id: 0 })),
           Su: 0,
@@ -323,6 +325,12 @@ export async function startMockSite() {
 
     // ---------------------------------------------------------------- 图床
     if (path === "/api/get_image_bucket_token") return json(res, { status: "ok", token: "tok-123==" });
+    if (path === "/api/upload_avatar" || path === "/api/upload_bg") {
+      const file = "12345-deadbeef.webp";
+      if (path.endsWith("avatar")) state.avatar = `avatar/${file}`;
+      else state.bg = `bg/${file}`;
+      return json(res, { status: "ok", file });
+    }
     if (path === "/api/upload_image") {
       const hasFile = body.includes('name="file"');
       return json(res, { status: hasFile ? "ok" : "token_format_error", file: "12345-deadbeef.webp" });

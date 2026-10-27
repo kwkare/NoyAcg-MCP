@@ -18,7 +18,11 @@ export interface UploadInput {
   data: Uint8Array;
   fileName: string;
   mime: string;
+  /** 图床路径，默认发帖用的 /api/upload_image */
+  path?: string;
 }
+
+export type ProfileImageKind = "avatar" | "bg";
 
 export interface UploadResult {
   file: string;
@@ -290,7 +294,7 @@ export class NoyClient {
     form.set("file", new Blob([input.data], { type: input.mime }), input.fileName);
 
     const res = await this.request(
-      `${this.cfg.bucketUrl}/api/upload_image`,
+      `${this.cfg.bucketUrl}${input.path ?? "/api/upload_image"}`,
       {
         method: "POST",
         body: form,
@@ -305,7 +309,7 @@ export class NoyClient {
       { timeoutMs: this.cfg.uploadTimeoutMs },
     );
 
-    const payload = await this.parse<Json>(res, "bucket/api/upload_image");
+    const payload = await this.parse<Json>(res, `bucket${input.path ?? "/api/upload_image"}`);
     if (payload.status !== "ok") {
       throw new NoyApiError(
         `图床上传失败：status=${String(payload.status)}。token 过期/无效时重新换 token；HTTP ${res.status}`,
@@ -318,12 +322,24 @@ export class NoyClient {
     return { file, imageRef: `image/${file}` };
   }
 
+  /**
+   * 上传头像 / 背景图。
+   * 走 `/bucket/api/upload_avatar`、`/bucket/api/upload_bg`（与 upload_image 同一套 token + multipart），
+   * 服务端会直接把新文件写进 `userinfo.Avatar` / `userinfo.Bg`，没有额外的保存接口。
+   */
+  async uploadProfileImage(kind: ProfileImageKind, input: Omit<UploadInput, "path">): Promise<UploadResult> {
+    return this.uploadImage({ ...input, path: `/api/upload_${kind}` });
+  }
+
   /** 相对路径（如 `avatar/x.webp`）→ 绝对 URL */
   bucketImageUrl(relative: string | undefined | null): string | null {
     if (!relative) return null;
     if (/^https?:\/\//i.test(relative)) return relative;
-    // 帖子里的 image 字段已经是 `image/xxx.webp`，不要再拼一次 /image/
-    const path = relative.replace(/^\/+/, "").replace(/^image\//, "");
-    return `${this.cfg.bucketUrl}/image/${path}`;
+    // 接口给的都是「相对图床根目录」的路径，原样拼接即可：
+    //   image/xxx.webp  → https://bucket.noymanga.com/image/xxx.webp
+    //   avatar/xxx.webp → https://bucket.noymanga.com/avatar/xxx.webp
+    //   bg/xxx.webp     → https://bucket.noymanga.com/bg/xxx.webp
+    // 注意不要统一加 /image/ 前缀，那样 avatar/bg 会返回 JSON 而不是图片。
+    return `${this.cfg.bucketUrl}/${relative.replace(/^\/+/, "")}`;
   }
 }

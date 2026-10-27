@@ -161,7 +161,9 @@ describe("NoyClient.uploadImage", () => {
 describe("其他行为", () => {
   it("bucketImageUrl 补全相对路径，绝对地址原样返回", () => {
     const client = new NoyClient(loadConfig({ NOY_SESSION: "x" }));
-    assert.equal(client.bucketImageUrl("avatar/x.webp"), "https://bucket.noymanga.com/image/avatar/x.webp");
+    assert.equal(client.bucketImageUrl("avatar/x.webp"), "https://bucket.noymanga.com/avatar/x.webp");
+    assert.equal(client.bucketImageUrl("bg/x.webp"), "https://bucket.noymanga.com/bg/x.webp");
+    assert.equal(client.bucketImageUrl("image/x.webp"), "https://bucket.noymanga.com/image/x.webp");
     assert.equal(client.bucketImageUrl("https://cdn/x.webp"), "https://cdn/x.webp");
     assert.equal(client.bucketImageUrl(""), null);
   });

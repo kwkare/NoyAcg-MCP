@@ -27,23 +27,23 @@ interface Uploaded {
   bytes: number;
 }
 
-async function uploadLocalFiles(ctx: ToolContext, paths: string[]): Promise<Uploaded[]> {
+async function uploadLocalFiles(ctx: ToolContext, paths: string[], imagePath?: string): Promise<Uploaded[]> {
   const uploaded: Uploaded[] = [];
   for (const raw of paths) {
-    const path = resolve(raw);
-    const info = await stat(path).catch(() => null);
-    if (!info?.isFile()) throw new NoyError(`找不到文件：${path}`);
+    const filePath = resolve(raw);
+    const info = await stat(filePath).catch(() => null);
+    if (!info?.isFile()) throw new NoyError(`找不到文件：${filePath}`);
     if (info.size > ctx.cfg.maxUploadBytes) {
       throw new NoyError(
-        `图片太大：${path}（${(info.size / 1024 / 1024).toFixed(1)} MB，上限 ${(ctx.cfg.maxUploadBytes / 1024 / 1024).toFixed(0)} MB）`,
+        `图片太大：${filePath}（${(info.size / 1024 / 1024).toFixed(1)} MB，上限 ${(ctx.cfg.maxUploadBytes / 1024 / 1024).toFixed(0)} MB）`,
       );
     }
-    const mime = MIME_BY_EXT[extname(path).toLowerCase()];
-    if (!mime) throw new NoyError(`不支持的格式：${path}（支持 jpg / jpeg / png / webp / gif）`);
+    const mime = MIME_BY_EXT[extname(filePath).toLowerCase()];
+    if (!mime) throw new NoyError(`不支持的格式：${filePath}（支持 jpg / jpeg / png / webp / gif）`);
 
-    const data = await readFile(path);
-    const result = await ctx.client.uploadImage({ data, fileName: basename(path), mime });
-    uploaded.push({ source: path, file: result.file, imageRef: result.imageRef, bytes: data.byteLength });
+    const data = await readFile(filePath);
+    const result = await ctx.client.uploadImage({ data, fileName: basename(filePath), mime, path: imagePath });
+    uploaded.push({ source: filePath, file: result.file, imageRef: result.imageRef, bytes: data.byteLength });
   }
   return uploaded;
 }
@@ -444,6 +444,61 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
           `校验：${nowWearing.has(String(badge_id)) === wear ? "状态已生效" : "⚠️ 状态与预期不符，请回读 noy_list_badges"}`,
           "",
           "提示：`show` 的顺序就是佩戴顺序；脏值（不存在的 ID）会一直留在里面，只能再切一次清掉。",
+        ].join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "noy_set_profile_image",
+    {
+      title: "设置头像 / 主页背景图",
+      description:
+        "上传本地图片并设为头像或主页背景图（服务端会把新文件直接写进资料，没有单独的「保存」接口）。\n" +
+        "⚠️ 会**覆盖**当前头像/背景图，旧文件不会自动删除；工具会返回旧地址，方便你回滚。\n" +
+        "头像与背景图走不同的图床端点（upload_avatar / upload_bg），限制比发帖图片更严（过大会报 size）。",
+      inputSchema: {
+        kind: z.enum(["avatar", "bg"]).describe("avatar = 头像，bg = 主页背景图"),
+        path: z.string().min(1).describe("本地图片路径（jpg / png / webp / gif）"),
+        adult: adultParam,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ kind, path, adult }) =>
+      run(async () => {
+        const before = (await client.userinfo(adult)).userinfo ?? {};
+        const field = kind === "avatar" ? "Avatar" : "Bg";
+        const oldRelative = String(before[field] ?? "");
+        const oldUrl = client.bucketImageUrl(oldRelative);
+
+        const [uploaded] = await uploadLocalFiles(ctx, [path], `/api/upload_${kind}`);
+        if (!uploaded) throw new NoyError("上传失败：没有拿到结果");
+
+        // 回读确认：服务端是否真的把新文件写进了资料
+        const after = (await client.userinfo(adult)).userinfo ?? {};
+        const newRelative = String(after[field] ?? "");
+        const newUrl = client.bucketImageUrl(newRelative);
+        const changed = newRelative !== "" && newRelative !== oldRelative;
+
+        await audit(cfg, {
+          tool: "noy_set_profile_image",
+          args: { kind, path: uploaded.source },
+          ok: changed,
+          result: { before: oldRelative, after: newRelative },
+        });
+
+        if (!changed) {
+          throw new NoyError(
+            `图片已上传（${uploaded.file}），但资料里的 ${field} 没变（仍是 ${oldRelative || "空"}）。` +
+              "可能这个端点只负责上传、不负责应用；先别重复尝试，把这条报错反馈给维护者。",
+          );
+        }
+
+        return [
+          `✅ 已更新${kind === "avatar" ? "头像" : "背景图"}`,
+          `旧：${oldUrl ?? "—"}`,
+          `新：${newUrl ?? "—"}`,
+          "",
+          "提示：旧文件仍留在图床上（不会自动删除）；想回滚就把旧图下载下来再设一次。",
         ].join("\n");
       }),
   );

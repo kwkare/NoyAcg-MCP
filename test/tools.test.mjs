@@ -217,6 +217,17 @@ describe("tools 集成（假站点）", () => {
     assert.deepEqual(created.image, ["image/12345-deadbeef.webp"]);
   });
 
+  it("noy_set_profile_image：上传头像并回读确认已生效", async () => {
+    const avatarPath = join(workDir, "avatar.png");
+    await (await import("node:fs/promises")).writeFile(avatarPath, Buffer.from("89504e470d0a1a0a", "hex"));
+
+    const { text, isError } = await server.call("noy_set_profile_image", { kind: "avatar", path: avatarPath });
+    assert.equal(isError, false, text);
+    assert.match(text, /已更新头像/);
+    assert.match(text, /avatar\/12345-deadbeef\.webp/);
+    assert.equal(site.state.avatar, "avatar/12345-deadbeef.webp");
+  });
+
   it("noy_edit_post：只改正文时沿用原标题", async () => {
     const { text, isError } = await server.call("noy_edit_post", { post_id: 78930, content: "改过的正文" });
     assert.equal(isError, false, text);
