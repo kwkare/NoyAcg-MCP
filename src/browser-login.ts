@@ -87,7 +87,13 @@ async function readValidSession(
   context: any,
   baseUrl: string,
 ): Promise<{ cookie: string; uid?: number; username?: string } | null> {
-  const cookies: { name: string; value: string }[] = await context.cookies(baseUrl);
+  let cookies: { name: string; value: string }[];
+  try {
+    cookies = await context.cookies(baseUrl);
+  } catch {
+    // 浏览器刚崩溃 / 被外部关掉：当作没登录，走正常弹窗流程
+    return null;
+  }
   const session = cookies
     .filter((c) => c.name === "NOY_SESSION" && c.value.length >= 40)
     .sort((a, b) => b.value.length - a.value.length)[0];
@@ -95,6 +101,26 @@ async function readValidSession(
   const account = await verifyCookie(baseUrl, session.value);
   if (!account) return null;
   return { cookie: session.value, ...account };
+}
+
+/**
+ * 把会话 cookie 落成「持久 cookie」。
+ * 站点登录下发的是 session cookie（关浏览器即失效），不补 expires 的话
+ * profile 里留不住，下次复用探测必然失败。
+ */
+async function persistCookie(context: any, cookie: any): Promise<void> {
+  const expires = Math.floor(Date.now() / 1000) + 30 * 24 * 3600; // 与站点侧会话寿命一致：30 天
+  const payload: Record<string, unknown> = {
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path ?? "/",
+    expires,
+    httpOnly: cookie.httpOnly ?? false,
+    secure: cookie.secure ?? true,
+    sameSite: cookie.sameSite ?? "Lax",
+  };
+  await context.addCookies([payload]);
 }
 
 /** 在页面顶部浮一条提示，让用户知道「不用你了，已经登录好了」 */
@@ -132,6 +158,12 @@ async function tryLaunch(
   channels: string[],
   failures: string[],
 ): Promise<Launched | null> {
+  // Linux 上 Chrome 默认用 keyring 加密 cookie；headful 与 headless 拿到的密钥可能不同，
+  // 会导致「登录时能读到、下次 headless 探测读不到」。固定成 basic 保证跨模式一致。
+  // 这个 profile 只用来存一个站点的会话，而会话文件本身就是明文 cookie，风险没有变化。
+  const args = ["--start-maximized", "--no-first-run", "--no-default-browser-check"];
+  if (process.platform === "linux") args.push("--password-store=basic");
+
   for (const channel of channels) {
     try {
       const context = await chromium.launchPersistentContext(options.profileDir, {
@@ -141,7 +173,7 @@ async function tryLaunch(
         locale: "zh-CN",
         // 兜底：任何情况下都不要卡住不动
         timeout: 30_000,
-        args: ["--start-maximized", "--no-first-run", "--no-default-browser-check"],
+        args,
       });
       return { context, channel: channel || "bundled-chromium" };
     } catch (err) {
@@ -205,7 +237,12 @@ function makeHandle(
 
         if (session) {
           const account = await verifyCookie(options.baseUrl, session.value);
-          if (account) return { cookie: session.value, ...account, channel, reused: false };
+          if (account) {
+            // 站点的登录 cookie 是 session cookie（没有 Max-Age），浏览器一关就丢。
+            // 这里补一个 30 天有效期写回 profile，否则「下次自动复用」永远不成立。
+            await persistCookie(context, session).catch(() => undefined);
+            return { cookie: session.value, ...account, channel, reused: false };
+          }
 
           // 可能是上一任账号留下的失效 cookie：清掉再等用户登录
           if (!invalidSeen) {
@@ -243,6 +280,7 @@ export async function openLoginBrowser(options: BrowserLoginOptions): Promise<Lo
     if (probe) {
       const existing = await readValidSession(probe.context, options.baseUrl);
       if (existing) {
+        await persistCookie(probe.context, { name: "NOY_SESSION", value: existing.cookie, domain: new URL(options.baseUrl).hostname, path: "/" }).catch(() => undefined);
         const page = probe.context.pages()[0] ?? (await probe.context.newPage());
         await page.goto(`${options.baseUrl}/user`, { waitUntil: "domcontentloaded", timeout: 20_000 }).catch(() => undefined);
         await showToast(page, `✅ 已登录：${existing.username ?? "当前账号"}，正在保存会话…`);

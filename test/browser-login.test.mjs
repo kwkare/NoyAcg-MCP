@@ -15,15 +15,16 @@ const VALID_COOKIE = "s".repeat(120);
  * - /fake-login  登录动作，种 NOY_SESSION
  * - /api/v3/userinfo  校验 cookie
  */
-async function startMockLoginSite({ autoLogin }) {
+async function startMockLoginSite({ autoLogin, persistentCookie = true }) {
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://mock");
 
     if (url.pathname === "/fake-login") {
-      res.writeHead(200, {
-        "set-cookie": `NOY_SESSION=${VALID_COOKIE}; Path=/; Max-Age=2592000`,
-        "content-type": "text/plain",
-      });
+      // persistentCookie=false 时模拟真实站点：下发 session cookie（无 Max-Age）
+      const cookie = persistentCookie
+        ? `NOY_SESSION=${VALID_COOKIE}; Path=/; Max-Age=2592000`
+        : `NOY_SESSION=${VALID_COOKIE}; Path=/`;
+      res.writeHead(200, { "set-cookie": cookie, "content-type": "text/plain" });
       res.end("ok");
       return;
     }
@@ -129,6 +130,32 @@ describe("浏览器登录（headless Chrome）", () => {
       await handle.close();
     }
     assert.equal(handle.closed, true);
+  });
+
+  it("登录下发的是 session cookie 时，也要落成持久 cookie（否则重开就丢）", async (t) => {
+    if (!available) return t.skip(`本机没有可用浏览器：${skipReason}`);
+    const site = await startMockLoginSite({ autoLogin: true, persistentCookie: false });
+    const profile = join(dir, "session-cookie");
+    try {
+      const first = await openLoginBrowser({ baseUrl: site.base, profileDir: profile, headless: true, pollMs: 200 });
+      try {
+        const result = await first.wait(20_000);
+        assert.equal(result.cookie, VALID_COOKIE);
+      } finally {
+        await first.close();
+      }
+
+      // 重新打开：如果不补 expires，这里会因为 session cookie 被清掉而超时
+      const second = await openLoginBrowser({ baseUrl: site.base, profileDir: profile, headless: true, pollMs: 200 });
+      try {
+        const again = await second.wait(3_000);
+        assert.equal(again.cookie, VALID_COOKIE, "cookie 应该已经持久化");
+      } finally {
+        await second.close();
+      }
+    } finally {
+      site.server.close();
+    }
   });
 
   it("profile 已登录时直接复用，不弹窗", async (t) => {
