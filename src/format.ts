@@ -48,12 +48,20 @@ export function describeError(err: unknown): string {
     return [
       "🔒 需要登录：NOY_SESSION 缺失或已失效。",
       "",
-      "修复步骤：",
-      "1. 浏览器打开 https://noymanga.com 并登录；",
-      "2. DevTools → Application → Cookies → `NOY_SESSION`，复制整段值；",
-      "3. 更新 MCP 配置里的环境变量 `NOY_SESSION`，重启 MCP 客户端。",
+      "最快的修复方式（让用户在浏览器里点几下，自动保存，无需重启）：",
+      '  · 调 `noy_browser_login({ action: "wait", timeout_seconds: 120 })`，然后把弹出的窗口交给用户登录；',
+      "  · 已登录过的 profile 会 2 秒内直接复用，不弹窗。",
       "",
-      "注意：调用 `/api/logout`（或站点内退出登录）会立刻吊销旧 cookie，之后必须重新复制。",
+      "命令行方式（本机跑）：",
+      "  · `noyacg-mcp login` —— 同样会打开窗口并保存到 ~/.noyacg-mcp/session.json。",
+      "",
+      "不想用浏览器自动化时（手动复制）：",
+      "  1. 浏览器打开 https://noymanga.com 登录；",
+      "  2. DevTools → Application → Cookies → 复制 `NOY_SESSION` 的值；",
+      "  3. 写进 MCP 配置的 `NOY_SESSION` 环境变量后重启客户端。",
+      "",
+      "注意：`/api/logout`（或站点里退出登录）会立刻吊销旧 cookie，之后必须重新登录；",
+      "本工具默认只清本地，`noy_logout(revoke=true)` 才会吊销服务端会话。",
     ].join("\n");
   }
   if (err instanceof NoyApiError) {
