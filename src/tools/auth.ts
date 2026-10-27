@@ -11,7 +11,7 @@ import type { ToolContext } from "./read.js";
 let active: { handle: LoginHandle; startedAt: number } | null = null;
 
 export function registerAuthTools(server: McpServer, ctx: ToolContext): void {
-  const { cfg, client } = ctx;
+  const { cfg } = ctx;
   if (!cfg.browserLoginEnabled) return;
 
   server.registerTool(
@@ -119,8 +119,4 @@ export function registerAuthTools(server: McpServer, ctx: ToolContext): void {
         ].join("\n");
       }),
   );
-
-  // 供测试与内部使用
-  void NoyError;
-  void client;
 }
