@@ -20,6 +20,8 @@ export interface UploadInput {
   mime: string;
   /** 图床路径，默认发帖用的 /api/upload_image */
   path?: string;
+  /** 是否要求响应里带 `file`。发帖图片需要；头像 / 背景图只返回 `status: ok`（默认 true） */
+  expectFile?: boolean;
 }
 
 export type ProfileImageKind = "avatar" | "bg";
@@ -317,9 +319,10 @@ export class NoyClient {
         payload,
       );
     }
-    const file = payload.file;
-    if (typeof file !== "string" || !file) throw new NoyError("图床返回 ok，但没有 file 字段");
-    return { file, imageRef: `image/${file}` };
+    const file = typeof payload.file === "string" ? payload.file : "";
+    if (!file && (input.expectFile ?? true)) throw new NoyError("图床返回 ok，但没有 file 字段");
+    // 头像 / 背景图端点只回 status: ok，服务端自己把文件写进资料，所以这里 file 可能为空
+    return { file, imageRef: file ? `image/${file}` : "" };
   }
 
   /**
@@ -328,7 +331,8 @@ export class NoyClient {
    * 服务端会直接把新文件写进 `userinfo.Avatar` / `userinfo.Bg`，没有额外的保存接口。
    */
   async uploadProfileImage(kind: ProfileImageKind, input: Omit<UploadInput, "path">): Promise<UploadResult> {
-    return this.uploadImage({ ...input, path: `/api/upload_${kind}` });
+    // 注意：upload_avatar / upload_bg 的响应是 `{"status":"ok"}`，没有 file 字段
+    return this.uploadImage({ ...input, path: `/api/upload_${kind}`, expectFile: false });
   }
 
   /** 相对路径（如 `avatar/x.webp`）→ 绝对 URL */

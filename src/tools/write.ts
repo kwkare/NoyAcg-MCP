@@ -27,7 +27,11 @@ interface Uploaded {
   bytes: number;
 }
 
-async function uploadLocalFiles(ctx: ToolContext, paths: string[], imagePath?: string): Promise<Uploaded[]> {
+async function uploadLocalFiles(
+  ctx: ToolContext,
+  paths: string[],
+  options: { path?: string; expectFile?: boolean } = {},
+): Promise<Uploaded[]> {
   const uploaded: Uploaded[] = [];
   for (const raw of paths) {
     const filePath = resolve(raw);
@@ -42,7 +46,13 @@ async function uploadLocalFiles(ctx: ToolContext, paths: string[], imagePath?: s
     if (!mime) throw new NoyError(`不支持的格式：${filePath}（支持 jpg / jpeg / png / webp / gif）`);
 
     const data = await readFile(filePath);
-    const result = await ctx.client.uploadImage({ data, fileName: basename(filePath), mime, path: imagePath });
+    const result = await ctx.client.uploadImage({
+      data,
+      fileName: basename(filePath),
+      mime,
+      path: options.path,
+      expectFile: options.expectFile,
+    });
     uploaded.push({ source: filePath, file: result.file, imageRef: result.imageRef, bytes: data.byteLength });
   }
   return uploaded;
@@ -470,7 +480,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         const oldRelative = String(before[field] ?? "");
         const oldUrl = client.bucketImageUrl(oldRelative);
 
-        const [uploaded] = await uploadLocalFiles(ctx, [path], `/api/upload_${kind}`);
+        const [uploaded] = await uploadLocalFiles(ctx, [path], { path: `/api/upload_${kind}`, expectFile: false });
         if (!uploaded) throw new NoyError("上传失败：没有拿到结果");
 
         // 回读确认：服务端是否真的把新文件写进了资料
@@ -488,7 +498,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
 
         if (!changed) {
           throw new NoyError(
-            `图片已上传（${uploaded.file}），但资料里的 ${field} 没变（仍是 ${oldRelative || "空"}）。` +
+            `图片已上传，但资料里的 ${field} 没变（仍是 ${oldRelative || "空"}）。` +
               "可能这个端点只负责上传、不负责应用；先别重复尝试，把这条报错反馈给维护者。",
           );
         }

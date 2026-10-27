@@ -329,7 +329,8 @@ export async function startMockSite() {
       const file = "12345-deadbeef.webp";
       if (path.endsWith("avatar")) state.avatar = `avatar/${file}`;
       else state.bg = `bg/${file}`;
-      return json(res, { status: "ok", file });
+      // 真站点就是这个形态：只有 status，没有 file
+      return json(res, { status: "ok" });
     }
     if (path === "/api/upload_image") {
       const hasFile = body.includes('name="file"');
