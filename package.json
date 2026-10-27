@@ -1,0 +1,43 @@
+{
+  "name": "noyacg-mcp",
+  "version": "0.1.0",
+  "description": "NoyAcg（noymanga.com）MCP server：给 AI agent 用的漫画社区 / 图床 / 签到 / 讯息工具",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "noyacg-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "start": "node dist/index.js",
+    "pretest": "npm run build",
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "noymanga",
+    "noyacg",
+    "manga",
+    "agent"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
+}
