@@ -138,6 +138,26 @@ describe("tools 集成（假站点）", () => {
     assert.match(text, /已按参数跳过/);
   });
 
+  it("noy_book_detail：资料 + 章节 + 售价 + 首屏评论", async () => {
+    const { text, isError } = await server.call("noy_book_detail", { bid: 54485, comment_limit: 2 });
+    assert.equal(isError, false, text);
+    assert.match(text, /《测试漫画》Bid 54485/);
+    assert.match(text, /9\.7\/10/);
+    assert.match(text, /章节：2 类，共 3 话/);
+    assert.match(text, /單話（2 话）/);
+    assert.match(text, /售价 2 积分/);
+    assert.match(text, /评论 2 条/);
+    assert.match(text, /NID54485/);
+  });
+
+  it("noy_book_comments：cid 主键 + over", async () => {
+    const { text, isError } = await server.call("noy_book_comments", { bid: 54485, limit: 5 });
+    assert.equal(isError, false, text);
+    assert.match(text, /cid 12/);
+    assert.match(text, /好看 \[noygirl:yeah\]/);
+    assert.match(text, /over=true/);
+  });
+
   it("noy_comment：发顶层评论并回读 rid", async () => {
     const { text, isError } = await server.call("noy_comment", { post_id: 78930, text: "测试评论 [noygirl:yeah]" });
     assert.equal(isError, false, text);

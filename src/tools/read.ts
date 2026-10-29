@@ -47,10 +47,43 @@ export function postLine(post: Record<string, any>, index: number): string {
     .join(" · ");
 }
 
+export function bookDetailLine(info: Record<string, any>): string {
+  const status = info.Status === 1 ? "完结" : info.Status === 0 ? "连载中" : "—";
+  // RatingSUM 是 10 分制，站点界面按 5 星显示（÷2）；这里保留原始分值并标注刻度
+  const rating = info.RatingCount > 0 ? `${info.RatingSUM}/10（${info.RatingCount} 人评分）` : "暂无评分";
+  return [
+    `《${info.Bookname}》Bid ${info.Bid}`,
+    `作者 ${info.Author || "—"} · ${info.publish_year || "年份未知"} · ${status} · ${info.Adult === 1 ? "R18" : "全年龄"}`,
+    `阅读 ${info.Views ?? 0} · 收藏 ${info.Favorites ?? 0} · 评分 ${rating}`,
+    info.Ptag ? `标签 ${String(info.Ptag).split(" ").filter(Boolean).join(" / ")}` : null,
+    info.alias ? `别名 ${info.alias}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function chapterOverview(chapters: Record<string, any> | undefined, perCategory = 4): string[] {
+  const categories: Record<string, any>[] = chapters?.categories ?? [];
+  const data: Record<string, any[]> = chapters?.data ?? {};
+  const lines: string[] = [];
+  let total = 0;
+  for (const category of categories) {
+    const list = data[String(category.id)] ?? [];
+    total += list.length;
+    const names = list.slice(0, perCategory).map((chapter) => chapter.name);
+    lines.push(
+      `- ${category.name}（${list.length} 话）${names.length ? `：${names.join(" / ")}${list.length > names.length ? " …" : ""}` : ""}`,
+    );
+  }
+  return [`📚 章节：${categories.length} 类，共 ${total} 话`, ...lines];
+}
+
 export function commentLine(comment: Record<string, any>, index?: number): string {
+  // 帖子评论主键是 rid，书籍评论是 cid
+  const idLabel = comment.rid !== undefined ? `rid ${comment.rid}` : `cid ${comment.cid}`;
   const head = [
     index !== undefined ? `${index}.` : "-",
-    `rid ${comment.rid}`,
+    idLabel,
     `@${comment.username}`,
     comment.area ? `(${comment.area})` : null,
     fmtTime(comment.time),
@@ -417,6 +450,101 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           ...rows.map((r, i) => `${i + 1}. ${String(r.time).slice(0, 10)} · 连续 ${r.continuous} 天 · 星期 ${r.weekday}`),
         ];
         if (!record.today) lines.push("", "→ 用 noy_checkin 可以立刻签到（写操作）。");
+        return lines.join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "noy_book_detail",
+    {
+      title: "漫画详情（含章节与首屏评论）",
+      description:
+        "读取一部漫画的完整资料：书名、作者、标签、简介、评分、收藏、章节列表（按分类）、售价、同类推荐，" +
+        "以及首屏评论和评论总数。\n" +
+        "章节列表已经内联在详情里，不需要单独请求；想看更多评论用 noy_book_comments。\n" +
+        "注意：这是 **GET** 接口（社区那套是 POST），并且未登录会返回 `status: login`。",
+      inputSchema: {
+        bid: z.coerce.number().int().positive().describe("书籍 ID（Bid，例如 54485）"),
+        comment_limit: z.number().int().min(0).max(20).default(6).describe("展示多少条评论（0 = 只显示条数）"),
+        adult: adultParam,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ bid, comment_limit, adult }) =>
+      run(async () => {
+        const payload = await client.bookDetail(bid, adult);
+        const book: Record<string, any> = payload.book ?? {};
+        const info: Record<string, any> = book.info ?? {};
+        const comments: Record<string, any>[] = payload.comment?.data ?? [];
+        const recommend: Record<string, any>[] = book.recommend ?? [];
+        const points: Record<string, any> = payload.points ?? {};
+
+        const lines = [
+          `📖 ${bookDetailLine(info)}`,
+          "",
+          ...chapterOverview(payload.chapters),
+        ];
+        if (info.Description) lines.push("", `简介：${clip(String(info.Description), 300)}`);
+        if (points.book_price !== undefined) {
+          lines.push("", `💰 售价 ${points.book_price} 积分${Number(points.book_price) === 0 ? "（免费）" : ""}`);
+        }
+        if (recommend.length) {
+          lines.push("", `🔎 相关推荐 ${recommend.length} 部${recommend.length > 5 ? "（显示前 5）" : ""}：`);
+          for (const item of recommend.slice(0, 5)) {
+            lines.push(`- 《${item.bookname}》Bid ${item.bid} · ${item.author || "—"} · ${item.views ?? 0} 浏览`);
+          }
+        }
+
+        const total = payload.comment?.count ?? comments.length;
+        if (comment_limit > 0 && comments.length) {
+          const pinned = comments.filter((c) => Number(c.uid) === 0 || c.area === "官方公告").length;
+          lines.push(
+            "",
+            `💬 评论 ${total} 条（首屏 ${comments.length} 条${pinned ? `，含 ${pinned} 条官方置顶` : ""}，显示前 ${Math.min(comment_limit, comments.length)} 条）：`,
+          );
+          for (const [i, comment] of comments.slice(0, comment_limit).entries()) {
+            lines.push(commentLine(comment, i + 1));
+            const replies: Record<string, any>[] = comment.replies ?? [];
+            for (const reply of replies.slice(0, 2)) {
+              lines.push(`     ↳ @${reply.username}：${clip(String(reply.content ?? ""), 120)}`);
+            }
+          }
+        } else {
+          lines.push("", `💬 评论 ${total} 条`);
+        }
+
+        lines.push("", `下一步：看全部评论 noy_book_comments(bid=${info.Bid ?? bid})；书籍引用写进帖子用 \`NID${info.Bid ?? bid}\`。`);
+        return lines.join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "noy_book_comments",
+    {
+      title: "漫画评论列表",
+      description:
+        "分页读取一部漫画下的评论（结构与帖子评论一致，但主键字段叫 cid 而不是 rid）。" +
+        "评论里的 `[noygirl:yeah]` 是表情包代码；楼中楼回复在 `replies` 里。用 `over` 判断是否到底。",
+      inputSchema: {
+        bid: z.coerce.number().int().positive().describe("书籍 ID（Bid）"),
+        page: pageParam,
+        limit: z.number().int().min(1).max(20).default(10).describe("返回多少条"),
+        adult: adultParam,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ bid, page, limit, adult }) =>
+      run(async () => {
+        const payload = await client.bookComments(bid, page ?? 1, adult);
+        const data: Record<string, any> = payload.data ?? {};
+        const comments: Record<string, any>[] = data.comments ?? [];
+        const lines = [
+          `💬 Bid ${bid} 的评论 · 第 ${data.page ?? page ?? 1} 页 · 本页 ${comments.length} 条 · over=${data.over}`,
+          "",
+          ...comments.slice(0, limit).map((comment, i) => commentLine(comment, i + 1)),
+        ];
+        if (!comments.length) lines.push("（没有更多评论）");
+        if (comments.length > limit) lines.push(`…还有 ${comments.length - limit} 条未展示（调大 limit）`);
         return lines.join("\n");
       }),
   );

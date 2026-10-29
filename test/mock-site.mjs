@@ -323,6 +323,65 @@ export async function startMockSite() {
 
     if (path === "/api/logout") return json(res, { status: "logout" });
 
+    // ---------------------------------------------------------------- 书籍
+    const bookDetail = path.match(/^\/api\/v4\/book\/(\d+)$/);
+    if (bookDetail) {
+      const bid = Number(bookDetail[1]);
+      return json(res, {
+        status: "ok",
+        uid: state.uid,
+        book: {
+          info: {
+            Bid: bid,
+            Bookname: "测试漫画",
+            alias: "Test Manga",
+            Description: "简介",
+            Author: "作者",
+            Pname: "未知",
+            Ptag: "搞笑 校園",
+            Otag: "原創",
+            Time: nowSec() - 1000,
+            Views: 100,
+            Favorites: 50,
+            F: false,
+            Len: 1,
+            Adult: 0,
+            Status: 0,
+            publish_year: "2022",
+            RatingSUM: 9.7,
+            RatingCount: 14,
+            RatingBayes: 0,
+          },
+          recommend: [{ bid: 1, bookname: "推荐漫画", author: "某人", tags: "校園", views: 10, favorites: 5, mode: true, status: true }],
+          translate: "",
+        },
+        chapters: {
+          categories: [{ id: 5, name: "單話" }, { id: 6, name: "單行本" }],
+          data: {
+            5: [{ id: 1, name: "第01話", count: 10, sort: 0, created_at: nowSec() }, { id: 2, name: "第02話", count: 10, sort: 1, created_at: nowSec() }],
+            6: [{ id: 3, name: "第01卷", count: 0, sort: 0, created_at: nowSec() }],
+          },
+        },
+        comment: { count: 2, data: [{ cid: 11, uid: 0, username: "官方", area: "官方公告", content: "公告", reply: -1, time: nowSec() - 100, replies: [] }] },
+        points: { book_price: "2", user_balance: "100.00" },
+      });
+    }
+    const bookComments = path.match(/^\/api\/v4\/comment\/book\/(\d+)\/comments$/);
+    if (bookComments) {
+      return json(res, {
+        status: "ok",
+        data: {
+          page: Number(url.searchParams.get("page") ?? 1),
+          over: true,
+          top_count: 1,
+          comments: [
+            { cid: 11, uid: 0, username: "官方", area: "官方公告", content: "公告", reply: -1, time: nowSec() - 100, replies: [] },
+            { cid: 12, uid: 777, username: "other", area: "Japan", content: "好看 [noygirl:yeah]", reply: -1, time: nowSec() - 50, replies: [] },
+          ],
+        },
+      });
+    }
+
     // ---------------------------------------------------------------- 图床
     if (path === "/api/get_image_bucket_token") return json(res, { status: "ok", token: "tok-123==" });
     if (path === "/api/upload_avatar" || path === "/api/upload_bg") {

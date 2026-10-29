@@ -148,6 +148,17 @@ export class NoyClient {
     return payload;
   }
 
+  /** 发 GET 请求（书籍详情 / 评论是 GET，这点和社区接口不同） */
+  async get<T = Json>(path: string, opts: RequestOptions = {}): Promise<T> {
+    const url = path.startsWith("http") ? path : `${this.cfg.baseUrl}${path}`;
+    const headers = this.headers(this.adult(opts.adult), true);
+    delete headers["content-type"];
+    const res = await this.request(url, { method: "GET", headers }, opts);
+    const payload = await this.parse<T>(res, path);
+    this.raiseForStatus(payload, path);
+    return payload;
+  }
+
   /** 用一个已吊销风险的 cookie 换新 cookie；仅在 NOY_ALLOW_PASSWORD_LOGIN=true 时由工具调用 */
   async login(email: string, password: string): Promise<string> {
     const body = new URLSearchParams({ user: email, pass: password });
@@ -204,6 +215,18 @@ export class NoyClient {
   /** 重复签到会返回数字 status=500，不算异常，由调用方判断 */
   signinSign(): Promise<Json> {
     return this.post("/api/v4/signin/sign", {});
+  }
+
+  // ------------------------------------------------------------------ 书籍
+
+  /** 书籍详情：info + 推荐 + 章节（按分类）+ 首屏评论 + 售价 */
+  bookDetail(bid: number | string, adult?: boolean): Promise<Json> {
+    return this.get(`/api/v4/book/${bid}`, { adult, retry: 1 });
+  }
+
+  /** 书籍评论（分页）；结构与帖子评论一致，但主键叫 cid */
+  bookComments(bid: number | string, page = 1, adult?: boolean): Promise<Json> {
+    return this.get(`/api/v4/comment/book/${bid}/comments?page=${page}`, { adult, retry: 1 });
   }
 
   // ------------------------------------------------------------------ 社区
