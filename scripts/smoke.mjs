@@ -75,6 +75,7 @@ const EXPECTED_TOOLS = [
   "noy_list_badges",
   "noy_book_detail",
   "noy_book_comments",
+  "noy_download_image",
   "noy_upload_images",
   "noy_create_post",
   "noy_comment",

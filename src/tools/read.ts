@@ -2,7 +2,10 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { NoyClient } from "../client.js";
 import type { Config } from "../config.js";
-import { clip, fmtTime, fmtUntil, json, run } from "../format.js";
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
+import { clip, describeError, failText, fmtTime, fmtUntil, json, okText, run } from "../format.js";
 
 export interface ToolContext {
   client: NoyClient;
@@ -271,7 +274,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           `赞 ${post.like} · 回复 ${post.reply} · 评论 ${data.comment_count ?? comments.length}（置顶 ${data.top_count ?? 0}）` +
             (post.is_like ? " · 我已赞" : ""),
           `图片 ${post.image?.length ?? 0} 张${spoiler ? `（${spoiler.split(",").length} 张被服务端标记为需模糊，作者无法控制）` : ""}` +
-            (post.image?.length ? `\n${post.image.map((p: string) => client.bucketImageUrl(p) ?? p).join("\n")}` : ""),
+            (post.image?.length
+              ? `\n${post.image.map((p: string) => client.bucketImageUrl(p) ?? p).join("\n")}` +
+                "\n⚠️ 图床有防盗链：直接抓这些 URL 会 403，要看图请用 noy_download_image 下载到本地"
+              : ""),
           `有效期：${fmtUntil(post.expired)}${post.edit ? ` · 最后编辑 ${fmtTime(post.edit)}` : ""}`,
           "",
           "正文：",
@@ -452,6 +458,50 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         if (!record.today) lines.push("", "→ 用 noy_checkin 可以立刻签到（写操作）。");
         return lines.join("\n");
       }),
+  );
+
+  server.registerTool(
+    "noy_download_image",
+    {
+      title: "下载图片到本地（agent 读图用）",
+      description:
+        "把社区图片下载到本地并返回绝对路径。\n" +
+        "⚠️ 图床有**防盗链**：直接把 URL 交给模型或脚本去抓会返回 403（浏览器能看是因为自动带了 Referer）。\n" +
+        "本工具会自动带 Referer / Origin，并校验只下载本站图片。\n" +
+        "`source` 支持完整 URL、`image/xxx.webp`、`avatar/xxx.webp`、`bg/xxx.webp`，或裸文件名（默认按 image/ 处理）。\n" +
+        "想让模型直接看到图，传 `inline=true`（返回 MCP image 内容，会占上下文，大图慎用）。",
+      inputSchema: {
+        source: z.string().min(1).describe("图片地址或路径"),
+        inline: z.boolean().default(false).describe("是否把图片本身作为 image 内容返回"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ source, inline }) => {
+      try {
+        const { buffer, mimeType, url } = await client.downloadImage(source);
+        const pathname = new URL(url).pathname;
+        const hash = createHash("sha1").update(buffer).digest("hex").slice(0, 12);
+        const filePath = join(cfg.imageCacheDir, `${hash}-${basename(pathname) || `image${extname(pathname) || ".img"}`}`);
+        await mkdir(cfg.imageCacheDir, { recursive: true, mode: 0o700 });
+        await writeFile(filePath, buffer, { mode: 0o600 });
+
+        const text = [
+          `🖼 已下载：${(buffer.byteLength / 1024).toFixed(1)} KB · ${mimeType}`,
+          `本地路径：${filePath}`,
+          `原始地址：${url}`,
+          "",
+          "直接把上面的本地路径作为附件读入即可看图；也可以再调一次 noy_download_image(inline=true)。",
+        ].join("\n");
+
+        if (!inline) return okText(text);
+        if (buffer.byteLength > 8 * 1024 * 1024) {
+          return okText(`${text}\n（图片超过 8 MB，已跳过 inline，请用本地路径读）`);
+        }
+        return { content: [{ type: "text", text }, { type: "image", data: buffer.toString("base64"), mimeType }] };
+      } catch (err) {
+        return failText(describeError(err));
+      }
+    },
   );
 
   server.registerTool(

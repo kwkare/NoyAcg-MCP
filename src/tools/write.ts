@@ -18,6 +18,9 @@ const MIME_BY_EXT: Record<string, string> = {
 
 const MAX_IMAGES = 9;
 
+/** 上一次成功发评论的时间，用来避开站点的评论冷却 */
+let lastCommentAt = 0;
+
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
 interface Uploaded {
@@ -211,7 +214,9 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       title: "发评论 / 回复评论",
       description:
         "在帖子下发评论。不带 reply_to_rid 是顶层评论（reply_id=-1）；带 reply_to_rid 是楼中楼回复。" +
-        "正文支持表情包代码。⚠️ 评论没有删除接口，发了就一直在；接口不返回评论 ID，本工具会回读列表找出新 rid。",
+        "正文支持表情包代码。⚠️ 评论没有删除接口，发了就一直在；接口不返回评论 ID，本工具会回读列表找出新 rid。\n" +
+        "⏳ 站点对评论有**约 25 秒冷却**：连续发第二条会失败。本工具会自动等待到冷却结束再提交（最多约 25 秒），" +
+        "不需要 agent 自己 sleep；但连续发多条时请预期每次调用会变慢。",
       inputSchema: {
         post_id: z.coerce.number().int().positive().describe("帖子 ID"),
         text: z.string().min(1).max(2000).describe("评论正文"),
@@ -232,7 +237,30 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         const existing = collectRids(before.data?.comments ?? []);
         const me = (await client.userinfo(adult)).userinfo ?? {};
 
-        const payload = await client.reply({ postId: post_id, text, replyToRid: reply_to_rid, platform });
+        // 站点有约 25 秒的评论冷却：距上次成功评论不足间隔时先等一会儿，避免直接失败
+        let waited = "";
+        const cooldown = cfg.commentCooldownMs;
+        const elapsed = Date.now() - lastCommentAt;
+        if (lastCommentAt > 0 && cooldown > 0 && elapsed < cooldown) {
+          const waitMs = cooldown - elapsed;
+          await sleep(waitMs);
+          waited = `（已自动等待 ${Math.ceil(waitMs / 1000)} 秒避开评论冷却）`;
+        }
+
+        let payload: Record<string, any>;
+        try {
+          payload = await client.reply({ postId: post_id, text, replyToRid: reply_to_rid, platform });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes("status=error")) {
+            throw new NoyError(
+              `${message}。如果刚才发过评论，站点有约 ${Math.round(cooldown / 1000)} 秒冷却，等一会儿再试；` +
+                "空白内容、重复内容或敏感词也会返回同样的 error。",
+            );
+          }
+          throw err;
+        }
+        lastCommentAt = Date.now();
 
         // 回读找新 rid（接口不返回）
         let found: Record<string, any> | null = null;
@@ -258,7 +286,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
 
         const warnings = stickerWarnings(text);
         const lines = [
-          `✅ 已发布（status=${String(payload.status)}）· 帖子 #${post_id} · ${reply_to_rid ? `回复 rid ${reply_to_rid}` : "顶层评论"}`,
+          `✅ 已发布（status=${String(payload.status)}）· 帖子 #${post_id} · ${reply_to_rid ? `回复 rid ${reply_to_rid}` : "顶层评论"}${waited}`,
         ];
         if (found) {
           lines.push(`新评论 rid ${found.rid}${found.root_id ? ` · root_id ${found.root_id}` : ""}`);

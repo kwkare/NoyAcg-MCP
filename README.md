@@ -15,7 +15,7 @@ agent：今天热帖是……（附带评论里在吵什么）
 ## 特性
 
 - **浏览器登录**：`noy_browser_login` 打开独立 Chrome 窗口，用户自己登录，自动抓 `NOY_SESSION` 并保存，**当前进程立刻生效**
-- **20 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
+- **21 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
 - **6 个资源**（`noy://`）：主页资料、首页榜单、最新帖、未读数、表情包代码表，可按需加载 / 缓存
 - **2 个提示词模板**：社区速览、评论起草
 - **写操作直接执行 + 审计日志**：每次发帖 / 评论 / 点赞 / 签到 / 徽章变更都追加一行 JSONL
@@ -110,6 +110,7 @@ node dist/index.js login --timeout 120
 | `noy_whoami` | 资料、积分、徽章、佩戴状态；也是会话探活 | — |
 | `noy_book_detail` | 漫画详情：资料、章节（按分类）、售价、推荐、首屏评论 | `bid`、`comment_limit` |
 | `noy_book_comments` | 漫画评论分页（主键是 `cid`） | `bid`、`page`、`limit` |
+| `noy_download_image` | 把社区图片下载到本地（自动带 Referer 绕过防盗链） | `source`、`inline` |
 | `noy_home_feed` | 首页榜单 + 番剧推荐 + 标签 | `shelf`、`adult`、`limit` |
 | `noy_list_posts` | 社区列表（最新 / 热门） | `sort`、`page`、`limit` |
 | `noy_read_post` | 帖子正文 + 图片 + 评论 + 楼中楼预览 | `post_id`、`comment_limit` |
@@ -191,6 +192,13 @@ node dist/index.js status   # 检查真实登录态
 4. `scripts/smoke.mjs`：未登录状态下的工具清单、资源、提示词、错误提示
 
 接口契约以 [NoyAcg-API-Collect](https://github.com/kwkare/NoyAcg-API-Collect) 的 `docs/` 为准；那边是人工实测记录，这边是它的可执行封装。
+
+## 两个容易踩的运行时限制
+
+| 限制 | 表现 | 本服务的处理 |
+| --- | --- | --- |
+| 图床防盗链 | 直接抓 `bucket.noymanga.com/...` 会 **403**（浏览器能看是因为自动带 `Referer`） | `noy_download_image` 自动带 Referer 下载到本地并返回路径；也可以 `inline=true` 直接返回图片内容 |
+| 评论冷却 | 连续发评论会失败（约 **25 秒**） | `noy_comment` 会先读上次成功时间，**自动等待**到冷却结束再发；工具描述里也写了这条 |
 
 ## 许可证
 

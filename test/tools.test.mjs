@@ -90,6 +90,8 @@ describe("tools 集成（假站点）", () => {
       NOY_BUCKET_URL: site.base,
       NOY_AUDIT_LOG: auditPath,
       NOY_SESSION_FILE: join(workDir, "session.json"),
+      NOY_IMAGE_CACHE_DIR: join(workDir, "images"),
+      NOY_COMMENT_COOLDOWN_MS: "500",
       NOY_TIMEOUT_MS: "5000",
     });
   });
@@ -167,9 +169,12 @@ describe("tools 集成（假站点）", () => {
     assert.equal(created.reply_id, -1);
   });
 
-  it("noy_comment：带 reply_to_rid 变成楼中楼", async () => {
+  it("noy_comment：带 reply_to_rid 变成楼中楼，且自动等待评论冷却", async () => {
+    const startedAt = Date.now();
     const { text, isError } = await server.call("noy_comment", { post_id: 78930, text: "楼中楼", reply_to_rid: 460550 });
     assert.equal(isError, false, text);
+    assert.match(text, /已自动等待 \d+ 秒避开评论冷却/);
+    assert.ok(Date.now() - startedAt >= 400, "应该真的等待了冷却时间");
     const created = site.state.comments.find((c) => c.content === "楼中楼");
     assert.equal(created.reply_id, 460550);
     assert.equal(created.root_id, 460550);
@@ -235,6 +240,26 @@ describe("tools 集成（假站点）", () => {
 
     const created = site.state.posts.find((p) => p.title === "集成测试帖");
     assert.deepEqual(created.image, ["image/12345-deadbeef.webp"]);
+  });
+
+  it("noy_download_image：带 Referer 下载到本地", async () => {
+    const { text, isError } = await server.call("noy_download_image", {
+      source: site.base + "/image/a.webp",
+    });
+    assert.equal(isError, false, text);
+    assert.match(text, /已下载/);
+    const path = text.match(/本地路径：(\S+)/)?.[1];
+    assert.ok(path, "应该返回本地路径");
+    const bytes = await readFile(path);
+    assert.ok(bytes.length > 0);
+  });
+
+  it("noy_download_image：图床 403 时给出可操作提示", async () => {
+    const { text, isError } = await server.call("noy_download_image", {
+      source: site.base + "/image/forbidden.webp",
+    });
+    assert.equal(isError, true);
+    assert.match(text, /403|防盗链/);
   });
 
   it("noy_set_profile_image：上传头像并回读确认已生效", async () => {

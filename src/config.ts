@@ -36,6 +36,10 @@ export interface Config {
   browserHeadless: boolean;
   /** 是否注册 noy_browser_login 工具；无桌面环境可关掉 */
   browserLoginEnabled: boolean;
+  /** 两次评论之间的最小间隔（站点有冷却，太频繁会 status=error） */
+  commentCooldownMs: number;
+  /** 图片下载缓存目录（给 agent 读图用） */
+  imageCacheDir: string;
 }
 
 function bool(value: string | undefined, fallback = false): boolean {
@@ -93,5 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     browserChannel: env.NOY_BROWSER?.trim() || undefined,
     browserHeadless: bool(env.NOY_BROWSER_HEADLESS, false),
     browserLoginEnabled: !bool(env.NOY_DISABLE_BROWSER_LOGIN, false),
+    commentCooldownMs: num(env.NOY_COMMENT_COOLDOWN_MS, 25_000),
+    imageCacheDir: env.NOY_IMAGE_CACHE_DIR?.trim() || join(home, "images"),
   };
 }

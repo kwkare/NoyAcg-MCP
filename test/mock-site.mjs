@@ -94,6 +94,18 @@ export async function startMockSite() {
       return json(res, { status: "login" });
     }
 
+    // ---------------------------------------------------------------- 图片（防盗链）
+    if (path.startsWith("/image/")) {
+      if (path.endsWith("forbidden.webp") || !req.headers.referer) {
+        res.writeHead(403, { "content-type": "text/plain" });
+        res.end("forbidden");
+        return;
+      }
+      res.writeHead(200, { "content-type": "image/webp" });
+      res.end(Buffer.from("RIFF0000WEBPVP8 ", "binary"));
+      return;
+    }
+
     // ---------------------------------------------------------------- 用户
     if (path === "/api/v3/userinfo") {
       return json(res, {

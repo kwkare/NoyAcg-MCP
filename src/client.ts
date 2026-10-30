@@ -358,6 +358,65 @@ export class NoyClient {
     return this.uploadImage({ ...input, path: `/api/upload_${kind}`, expectFile: false });
   }
 
+  /**
+   * 把图片 URL（或相对路径）解析成图床/站点的绝对地址。
+   * 只允许本站域名，避免这个工具被当成通用代理。
+   */
+  resolveImageUrl(source: string): string {
+    const raw = source.trim();
+    let url: URL;
+    if (/^https?:\/\//i.test(raw)) {
+      url = new URL(raw);
+    } else if (raw.startsWith("stickers/")) {
+      url = new URL(`${this.cfg.baseUrl}/${raw.replace(/^\/+/, "")}`);
+    } else if (/^(image|avatar|bg)\//.test(raw)) {
+      url = new URL(`${this.cfg.bucketUrl}/${raw}`);
+    } else {
+      url = new URL(`${this.cfg.bucketUrl}/image/${raw.replace(/^\/+/, "")}`);
+    }
+    const allowed = new Set([new URL(this.cfg.baseUrl).host, new URL(this.cfg.bucketUrl).host]);
+    if (!allowed.has(url.host)) {
+      throw new NoyError(`只允许下载本站图片：${url.host} 不在白名单内`);
+    }
+    return url.href;
+  }
+
+  /**
+   * 下载图片（带 Referer / Origin 绕过图床防盗链）。
+   * 直接 GET 图床会 403 —— 浏览器能看是因为它自动带了 Referer。
+   */
+  async downloadImage(source: string): Promise<{ buffer: Buffer; mimeType: string; url: string }> {
+    const url = this.resolveImageUrl(source);
+    const res = await this.request(
+      url,
+      {
+        method: "GET",
+        headers: {
+          accept: "image/avif,image/webp,image/*,*/*;q=0.8",
+          referer: `${this.cfg.baseUrl}/`,
+          origin: this.cfg.baseUrl,
+          "user-agent": `noyacg-mcp/${VERSION}`,
+        },
+      },
+      { timeoutMs: this.cfg.uploadTimeoutMs },
+    );
+
+    if (res.status === 403) {
+      throw new NoyError(
+        "图床返回 403（防盗链）：直接用 URL 抓取会被拒，本工具会自动带 Referer；" +
+          "如果仍失败，把完整 URL 传进来，或先用 noy_read_post 确认图片路径。",
+      );
+    }
+    if (!res.ok) throw new NoyError(`下载图片失败：HTTP ${res.status}（${url}）`);
+
+    const mimeType = (res.headers.get("content-type") ?? "application/octet-stream").split(";")[0]!.trim();
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (!mimeType.startsWith("image/")) {
+      throw new NoyError(`这个地址返回的不是图片（${mimeType}）：${url}`);
+    }
+    return { buffer, mimeType, url };
+  }
+
   /** 相对路径（如 `avatar/x.webp`）→ 绝对 URL */
   bucketImageUrl(relative: string | undefined | null): string | null {
     if (!relative) return null;
