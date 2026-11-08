@@ -5,7 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { NoyError } from "../errors.js";
 import { audit } from "../log.js";
 import { clip, fmtTime, json, run } from "../format.js";
-import { analyzeStickers } from "../stickers.js";
+import { analyzeStickers, suggestStickers } from "../stickers.js";
 import { adultParam, pageParam, type ToolContext } from "./read.js";
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -71,7 +71,19 @@ function stickerWarnings(text: string): string[] {
     );
   }
   if (unknown.length) {
-    warnings.push(`⚠️ 未收录的表情包代码：${unknown.join(" ")} —— 会原样显示成文字，不会渲染。`);
+    const hints = unknown
+      .slice(0, 3)
+      .map((raw) => {
+        const suggestions = suggestStickers(raw.slice(1, -1).replace(/[:\-]/g, " "), 2);
+        const first = suggestions[0];
+        return first
+          ? `${raw} → 试试 ${suggestions.map((s) => s.code).join(" 或 ")}（${first.meaning}）`
+          : `${raw} → 没有相近的，建议删掉`;
+      });
+    warnings.push(
+      `⚠️ 未收录的表情包代码：${unknown.join(" ")} —— 会原样显示成文字，不会渲染。${hints.length ? `参考：${hints.join("；")}` : ""}` +
+        " 全表见 noy://stickers。",
+    );
   }
   return warnings;
 }

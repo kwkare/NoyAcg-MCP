@@ -114,6 +114,9 @@ try {
   const stickerDoc = await request("resources/read", { uri: "noy://stickers" });
   const stickers = JSON.parse(stickerDoc.contents[0].text);
   assert.equal(stickers.count, 57, "表情包应为 4 组 57 个");
+  const withMeaning = stickers.groups.flatMap((g) => g.stickers).filter((s) => s.meaning && s.meaning.length >= 2);
+  assert.equal(withMeaning.length, 57, "每个表情都要有含义描述");
+  assert.ok(stickers.groups.every((g) => g.style), "每组都要有风格说明");
 
   const prompts = await request("prompts/list", {});
   assert.deepEqual(

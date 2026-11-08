@@ -148,7 +148,7 @@ node dist/index.js login --timeout 120
 | `noy://feed/home/adult` | 首页榜单（R18） |
 | `noy://community/latest` | 社区第一页（含置顶帖） |
 | `noy://inbox/unread` | 三个 tab 的未读数 |
-| `noy://stickers` | 4 组 57 个表情包代码 + 图片地址 |
+| `noy://stickers` | 4 组 57 个表情包：代码 + **含义** + 图片地址（按 meaning 挑） |
 
 ## 提示词
 

@@ -94,19 +94,24 @@ export function registerResources(server: McpServer, ctx: ToolContext): void {
     {
       title: "表情包代码表",
       description:
-        "4 组 57 个表情包的代码与图片地址（前端硬编码，无 API）。正文里写 [组:代码] 即可渲染；" +
+        "4 组 57 个表情包的代码、**含义**与图片地址（前端硬编码，无 API）。" +
+        "给用户发表情时**按 meaning 挑**，不要凭空编代号；正文里写 [组:代码] 即可渲染；" +
         "大小写错误会导致代码**静默消失**，务必用小写。",
       mimeType: "application/json",
     },
     async (uri) =>
       jsonBody(uri, {
-        note: "代码必须与表里完全一致（小写）；写错会显示成文字，大小写错会静默消失。",
+        note:
+          "按 meaning 挑表情，代码必须与表里完全一致（小写）；写错会显示成文字，大小写错会静默消失。" +
+          "找不到贴切的就别硬塞，纯文本回复也可以。",
         count: ALL_STICKERS.length,
         groups: STICKER_GROUPS.map((group) => ({
           name: group.name,
           label: group.label,
+          style: group.style,
           stickers: group.stickers.map((sticker) => ({
             code: sticker.code,
+            meaning: sticker.meaning,
             url: stickerUrl(cfg.baseUrl, sticker.file),
           })),
         })),
