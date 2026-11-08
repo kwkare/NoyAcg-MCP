@@ -173,8 +173,16 @@ export async function startMockSite() {
 
     // ---------------------------------------------------------------- 社区
     if (path === "/api/v3/community_list") {
-      const page = Number(asForm(body).page ?? 1);
-      return json(res, { status: "ok", info: state.posts, len: state.posts.length, over: page >= 1, top: page === 1 });
+      const form = asForm(body);
+      const page = Number(form.page ?? 1);
+      const filter = String(form.filter ?? "").trim().toLowerCase();
+      // filter 就是帖子搜索：匹配标题 / 正文 / 作者名（不区分大小写）
+      const matched = filter
+        ? state.posts.filter((p) =>
+            `${p.title} ${p.content} ${p.username}`.toLowerCase().includes(filter),
+          )
+        : state.posts;
+      return json(res, { status: "ok", info: matched, len: matched.length, over: true, top: page === 1 });
     }
     const detail = path.match(/^\/api\/v4\/community\/post\/(\d+)$/);
     if (detail) {

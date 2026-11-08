@@ -68,6 +68,7 @@ const EXPECTED_TOOLS = [
   "noy_whoami",
   "noy_home_feed",
   "noy_list_posts",
+  "noy_search_posts",
   "noy_read_post",
   "noy_read_comment_replies",
   "noy_inbox",

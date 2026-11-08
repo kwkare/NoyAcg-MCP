@@ -231,10 +231,14 @@ export class NoyClient {
 
   // ------------------------------------------------------------------ 社区
 
-  communityList(input: { page?: number; type?: string; adult?: boolean } = {}): Promise<Json> {
+  /**
+   * 社区列表。`filter` 就是站内的「过滤」= **帖子搜索**（匹配标题 / 正文 / 作者名），
+   * 命中数会体现在响应的 `len` 上。
+   */
+  communityList(input: { page?: number; type?: string; filter?: string; adult?: boolean } = {}): Promise<Json> {
     return this.post(
       "/api/v3/community_list",
-      { page: input.page ?? 1, type: input.type ?? "new", filter: "" },
+      { page: input.page ?? 1, type: input.type ?? "new", filter: input.filter ?? "" },
       { adult: input.adult, retry: 1 },
     );
   }

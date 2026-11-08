@@ -127,6 +127,20 @@ describe("tools 集成（假站点）", () => {
     assert.match(text, /over=true/);
   });
 
+  it("noy_search_posts：按关键词搜帖子（filter 参数）", async () => {
+    const hit = await server.call("noy_search_posts", { query: "图" });
+    assert.equal(hit.isError, false, hit.text);
+    assert.match(hit.text, /🔍 搜索「图」/);
+    assert.match(hit.text, /《图》/);
+
+    const miss = await server.call("noy_search_posts", { query: "这个词肯定搜不到xyz" });
+    assert.match(miss.text, /没有匹配的帖子/);
+
+    // 匹配正文与作者名，不区分大小写
+    const byAuthor = await server.call("noy_search_posts", { query: "TESTER" });
+    assert.match(byAuthor.text, /命中约 [1-9]/);
+  });
+
   it("noy_read_post：正文 + 评论 + 楼中楼入口提示", async () => {
     const { text } = await server.call("noy_read_post", { post_id: 78930 });
     assert.match(text, /\[noygirl:yeah\]/);

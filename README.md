@@ -15,7 +15,7 @@ agent：今天热帖是……（附带评论里在吵什么）
 ## 特性
 
 - **浏览器登录**：`noy_browser_login` 打开独立 Chrome 窗口，用户自己登录，自动抓 `NOY_SESSION` 并保存，**当前进程立刻生效**
-- **23 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
+- **24 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
 - **6 个资源**（`noy://`）：主页资料、首页榜单、最新帖、未读数、表情包代码表，可按需加载 / 缓存
 - **2 个提示词模板**：社区速览、评论起草
 - **写操作直接执行 + 审计日志**：每次发帖 / 评论 / 点赞 / 签到 / 徽章变更都追加一行 JSONL
@@ -113,6 +113,7 @@ node dist/index.js login --timeout 120
 | `noy_download_image` | 把社区图片下载到本地（自动带 Referer 绕过防盗链） | `source`、`inline` |
 | `noy_home_feed` | 首页榜单 + 番剧推荐 + 标签 | `shelf`、`adult`、`limit` |
 | `noy_list_posts` | 社区列表（最新 / 热门） | `sort`、`page`、`limit` |
+| `noy_search_posts` | 搜索帖子（标题 / 正文 / 作者名） | `query`、`sort`、`page`、`limit` |
 | `noy_read_post` | 帖子正文 + 图片 + 评论 + 楼中楼预览 | `post_id`、`comment_limit` |
 | `noy_read_comment_replies` | 楼中楼完整列表 | `post_id`、`rid`、`page` |
 | `noy_inbox` | 未读数 / 书籍评论回覆 / 社區回覆 / 系統訊息 | `kind`、`page`、`limit` |

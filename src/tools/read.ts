@@ -218,7 +218,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       title: "社区帖子列表",
       description:
         "按最新或最热翻社区帖子列表（每页约 40 条）。第 1 页会多带一条置顶帖；`len` 是近似总数会浮动，判断是否到底请用 `over`。" +
-        "列表里没有评论内容，要看评论用 noy_read_post。",
+        "列表里没有评论内容，要看评论用 noy_read_post。**按关键词找帖子请用 noy_search_posts**，不要靠翻页。",
       inputSchema: {
         sort: z.enum(["new", "like"]).default("new").describe("new = 最新；like = 热门"),
         page: pageParam,
@@ -243,6 +243,44 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           `over=${data.over}${data.over ? "（已到最后一页）" : "（还有下一页）"}`,
           `帖子 ID：${posts.slice(0, limit).map((p) => p.id).join(", ")}`,
         );
+        return lines.join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "noy_search_posts",
+    {
+      title: "搜索社区帖子",
+      description:
+        "按关键词搜社区帖子。底层是 `community_list` 的 `filter` 参数（站内叫「过滤」），" +
+        "同时匹配**标题、正文、作者名**，英文不区分大小写；空格是**普通字符**，不是多词 AND 条件。\n" +
+        "命中总数看 `len`（会随筛选轻微浮动），翻页用 `over` 判断。第 1 页会带置顶帖。\n" +
+        "⚠️ 站内 web 搜索框（/api/v4/search/fetch）只搜**书籍**，搜帖子只能走这个接口。",
+      inputSchema: {
+        query: z.string().min(1).max(80).describe("关键词（中文 / 英文均可，单个词组效果最好）"),
+        sort: z.enum(["new", "like"]).default("new").describe("new = 按时间；like = 按热度"),
+        page: pageParam,
+        limit: z.number().int().min(1).max(42).default(12).describe("返回多少条摘要"),
+        adult: adultParam,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ query, sort, page, limit, adult }) =>
+      run(async () => {
+        const data = await client.communityList({ page: page ?? 1, type: sort, filter: query, adult });
+        const posts: Record<string, any>[] = data.info ?? [];
+        const lines = [
+          `🔍 搜索「${query}」· ${sort === "like" ? "按热度" : "按时间"} · 第 ${page ?? 1} 页`,
+          `命中约 ${data.len ?? "?"} 条 · 本页 ${posts.length} 条 · over=${data.over}`,
+          "",
+          ...posts.slice(0, limit).map((post, index) => postLine(post, index + 1)),
+        ];
+        if (!posts.length) {
+          lines.push("（没有匹配的帖子）", "提示：关键词太长或带空格会搜不到，试试只保留一个核心词。");
+        } else if (posts.length > limit) {
+          lines.push("", `…还有 ${posts.length - limit} 条未展示（调大 limit 或用 page 翻页）`);
+        }
+        lines.push("", `帖子 ID：${posts.slice(0, limit).map((p) => p.id).join(", ")}`);
         return lines.join("\n");
       }),
   );
