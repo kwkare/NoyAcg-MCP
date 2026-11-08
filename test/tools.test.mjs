@@ -292,6 +292,36 @@ describe("tools 集成（假站点）", () => {
     assert.match(community.text, /不全是别人回复我/);
   });
 
+  it("noy_delete_post / noy_delete_comment：confirm 门 + 删除 + 回读", async () => {
+    // 发一条测试帖 + 评论
+    await server.call("noy_create_post", { title: "待删帖", content: "删除测试" });
+    const listed = await server.call("noy_list_posts", { limit: 5 });
+    const postId = Number(listed.text.match(/帖子 ID：(\d+)/)?.[1]);
+    assert.ok(postId, "应该拿到新帖 ID");
+
+    await server.call("noy_comment", { post_id: postId, text: "待删评论" });
+
+    // 无 confirm 时不执行
+    const blocked = await server.call("noy_delete_comment", { post_id: postId, rid: 999999 });
+    assert.match(blocked.text, /未执行/);
+
+    // 删评论（先回读拿真实 rid）
+    const detail = await server.call("noy_read_post", { post_id: postId, comment_limit: 5 });
+    const rid = Number(detail.text.match(/rid (\d+)/)?.[1]);
+    assert.ok(rid, "应该拿到评论 rid");
+    const delComment = await server.call("noy_delete_comment", { post_id: postId, rid, confirm: true });
+    assert.match(delComment.text, /已删除/);
+
+    // 删帖子
+    const delPost = await server.call("noy_delete_post", { post_id: postId, confirm: true });
+    assert.match(delPost.text, /已删除.*not_found|已删除/s);
+
+    // 删除后详情返回「不存在」
+    const after = await server.call("noy_read_post", { post_id: postId });
+    assert.match(after.text, /不存在/);
+    assert.match(after.text, /删除/);
+  });
+
   it("noy_logout(revoke=true)：吊销服务端会话并清空当前登录态", async () => {
     const out = await server.call("noy_logout", { revoke: true });
     assert.equal(out.isError, false, out.text);

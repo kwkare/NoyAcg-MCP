@@ -5,6 +5,7 @@ import type { Config } from "../config.js";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
+import { NoyApiError } from "../errors.js";
 import { clip, describeError, failText, fmtTime, fmtUntil, json, okText, run } from "../format.js";
 
 export interface ToolContext {
@@ -263,7 +264,15 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     },
     async ({ post_id, comment_limit, adult }) =>
       run(async () => {
-        const payload = await client.postDetail(post_id, adult);
+        let payload: Record<string, any>;
+        try {
+          payload = await client.postDetail(post_id, adult);
+        } catch (err) {
+          if (err instanceof NoyApiError && err.status === "not_found") {
+            return `🕳 帖子 #${post_id} 不存在：可能已被作者删除，或从未有过这个 ID。`;
+          }
+          throw err;
+        }
         const data = payload.data ?? {};
         const post = data.post ?? {};
         const comments: Record<string, any>[] = data.comments ?? [];

@@ -15,7 +15,7 @@ agent：今天热帖是……（附带评论里在吵什么）
 ## 特性
 
 - **浏览器登录**：`noy_browser_login` 打开独立 Chrome 窗口，用户自己登录，自动抓 `NOY_SESSION` 并保存，**当前进程立刻生效**
-- **21 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
+- **23 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
 - **6 个资源**（`noy://`）：主页资料、首页榜单、最新帖、未读数、表情包代码表，可按需加载 / 缓存
 - **2 个提示词模板**：社区速览、评论起草
 - **写操作直接执行 + 审计日志**：每次发帖 / 评论 / 点赞 / 签到 / 徽章变更都追加一行 JSONL
@@ -138,6 +138,8 @@ node dist/index.js login --timeout 120
 | `noy_checkin` | 每日签到 | 已签则跳过，返回积分变化 |
 | `noy_set_badge` | 佩戴 / 取消佩戴 | 先校验 ID（接口本身不校验） |
 | `noy_set_profile_image` | 设置头像 / 主页背景图 | 走 `upload_avatar` / `upload_bg`；**覆盖**旧图，会返回旧地址便于回滚 |
+| `noy_delete_post` | 删除自己的帖子 | `remove_content(item=community)`；必须 `confirm=true`；服务端不校验 id，结果以回读为准 |
+| `noy_delete_comment` | 删除自己的评论 | `remove_content(item=community_reply)`；同上，回读确认 |
 
 ## 资源
 
@@ -169,7 +171,7 @@ node dist/index.js login --timeout 120
 
 其它事实（都会影响 agent 的判断）：
 
-- 帖子 / 评论 **没有删除接口**，只能等 90 天过期；过期后从列表消失但链接仍可访问
+- 帖子 / 评论有删除接口 `POST /api/v3/remove_content`（`item=community` / `community_reply`），2026-10-31 实测；**服务端不校验** id / item / 重复删除，一律返回 ok——工具会回读确认真实结果。web 端只有评论删除按钮，没有删帖按钮
 - 点赞、徽章佩戴都是**开关式**，重试一次 = 翻转回去
 - 签到按 **UTC+8 00:00** 重置，每次 +1 积分；重复签到返回**数字** `status=500`
 - 内容分「全年龄 / R18」两套**互斥**内容池，`allow-adult` 不同则榜单、标签全变

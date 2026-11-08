@@ -179,7 +179,7 @@ export async function startMockSite() {
     const detail = path.match(/^\/api\/v4\/community\/post\/(\d+)$/);
     if (detail) {
       const post = state.posts.find((p) => p.id === Number(detail[1]));
-      if (!post) return json(res, { status: "ok", data: { post: {}, comments: [], comment_count: 0, top_count: 0, uid: state.uid } });
+      if (!post) return json(res, { status: "not_found" });
       return json(res, {
         status: "ok",
         data: {
@@ -334,6 +334,21 @@ export async function startMockSite() {
     }
 
     if (path === "/api/logout") return json(res, { status: "logout" });
+
+    if (path === "/api/v3/remove_content") {
+      const form = asForm(body);
+      const id = Number(form.id);
+      const item = form.item;
+      // 真站点不校验 id / item / 重复删除，一律 ok
+      if (item === "community") {
+        state.posts = state.posts.filter((p) => p.id !== id);
+        state.comments = state.comments.filter((c) => c.cid !== id);
+      } else if (item === "community_reply") {
+        state.comments = state.comments.filter((c) => c.rid !== id);
+        for (const c of state.comments) c.replies = (c.replies ?? []).filter((r) => r.rid !== id);
+      }
+      return json(res, { status: "ok" });
+    }
 
     // ---------------------------------------------------------------- 书籍
     const bookDetail = path.match(/^\/api\/v4\/book\/(\d+)$/);

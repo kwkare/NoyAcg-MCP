@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { NoyError } from "../errors.js";
+import { NoyApiError, NoyError } from "../errors.js";
 import { audit } from "../log.js";
 import { clip, fmtTime, json, run } from "../format.js";
 import { analyzeStickers, suggestStickers } from "../stickers.js";
@@ -494,6 +494,106 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
           `校验：${nowWearing.has(String(badge_id)) === wear ? "状态已生效" : "⚠️ 状态与预期不符，请回读 noy_list_badges"}`,
           "",
           "提示：`show` 的顺序就是佩戴顺序；脏值（不存在的 ID）会一直留在里面，只能再切一次清掉。",
+        ].join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "noy_delete_post",
+    {
+      title: "删除帖子（自己的）",
+      description:
+        "删除**自己发的**帖子：POST /api/v3/remove_content(id, item=community)。\n" +
+        "⚠️ 删除后帖子详情返回 `status: not_found`、从列表消失，**不可恢复**（90 天过期机制之外的即时删除）。\n" +
+        "⚠️ 服务端不校验：不存在的 id / 重复删除都返回 ok，删除结果以回读详情为准。\n" +
+        "⚠️ web 端没有删帖按钮（只有评论删除），此接口来自实测；对**他人**帖子的权限边界未测。\n" +
+        "先确认这是你自己的帖子，必要时先 noy_read_post 看一眼内容。",
+      inputSchema: {
+        post_id: z.coerce.number().int().positive().describe("要删除的帖子 ID"),
+        confirm: z
+          .boolean()
+          .default(false)
+          .describe("安全开关：必须显式传 true 才会执行删除"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ post_id, confirm }) =>
+      run(async () => {
+        if (!confirm) {
+          return [
+            `⛔ 未执行。删除 #${post_id} 是不可恢复操作，确认后请传 confirm=true。`,
+            "建议先 noy_read_post 确认内容，再带 confirm=true 调用。",
+          ].join("\n");
+        }
+        const before = await client.postDetail(post_id);
+        const existed = before.status === "ok" && before.data?.post?.id;
+        const payload = await client.removeContent({ id: post_id, item: "community" });
+        const after = await client.postDetail(post_id).catch((err) => ({
+          status: err instanceof NoyApiError ? err.status : `err:${String(err).slice(0, 40)}`,
+        }));
+        const gone = after.status === "not_found";
+        await audit(cfg, {
+          tool: "noy_delete_post",
+          args: { post_id, confirm },
+          ok: gone,
+          result: { status: payload.status, existed: Boolean(existed), after: after.status },
+        });
+        if (!existed && !gone) {
+          return `⚠️ 接口返回 ok，但删除前帖子就不存在（服务端不校验 id）。无需进一步操作。`;
+        }
+        return [
+          gone ? `✅ 帖子 #${post_id} 已删除（详情现在返回 not_found）` : `⚠️ 已调用删除接口，但详情状态是 ${String(after.status)}，请确认`,
+          "此操作不可恢复；帖子已从社区列表消失。",
+        ].join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "noy_delete_comment",
+    {
+      title: "删除评论（自己的）",
+      description:
+        "删除**自己发的**帖子评论（顶层或楼中楼同参数）：POST /api/v3/remove_content(id, item=community_reply)。\n" +
+        "web 端自己的评论旁有「刪除」按钮（带确认框），这个接口就是它背后的调用。\n" +
+        "⚠️ 服务端不校验 id / 重复删除，一律返回 ok；结果以回读详情为准。",
+      inputSchema: {
+        post_id: z.coerce.number().int().positive().describe("评论所在的帖子 ID"),
+        rid: z.coerce.number().int().positive().describe("要删除的评论 rid"),
+        confirm: z.boolean().default(false).describe("安全开关：必须显式传 true 才会执行"),
+        adult: adultParam,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ post_id, rid, confirm, adult }) =>
+      run(async () => {
+        if (!confirm) {
+          return [
+            `⛔ 未执行。删除评论 rid ${rid} 是不可恢复操作，确认后请传 confirm=true。`,
+          ].join("\n");
+        }
+        const before = await client.postDetail(post_id, adult);
+        const pool: Record<string, any>[] = [];
+        for (const comment of before.data?.comments ?? []) pool.push(comment, ...(comment.replies ?? []));
+        const target = pool.find((c) => Number(c.rid) === rid);
+
+        const payload = await client.removeContent({ id: rid, item: "community_reply" });
+        const after = await client.postDetail(post_id, adult);
+        const poolAfter: Record<string, any>[] = [];
+        for (const comment of after.data?.comments ?? []) poolAfter.push(comment, ...(comment.replies ?? []));
+        const stillThere = poolAfter.some((c) => Number(c.rid) === rid);
+        await audit(cfg, {
+          tool: "noy_delete_comment",
+          args: { post_id, rid, confirm },
+          ok: !stillThere,
+          result: { status: payload.status, existed: Boolean(target), stillThere },
+        });
+        return [
+          !target && !stillThere
+            ? `⚠️ 删除前就没找到 rid ${rid}（服务端不校验 id，接口照常返回 ok）。`
+            : stillThere
+              ? `⚠️ 接口返回 ok，但回读时评论仍在，请人工确认。`
+              : `✅ 评论 rid ${rid} 已删除（回读确认不在了）`,
+          "此操作不可恢复。",
         ].join("\n");
       }),
   );

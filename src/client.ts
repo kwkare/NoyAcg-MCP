@@ -274,6 +274,17 @@ export class NoyClient {
     });
   }
 
+  /**
+   * 删除自己的内容（帖子 / 评论）。
+   * 端点在前端 bundle 里不存在（web UI 只有评论删除按钮），2026-10-31 盲测确认：
+   * `item=community` 删帖、`item=community_reply` 删评论（顶层与楼中楼同参数）。
+   *
+   * ⚠️ 服务端**完全不校验**：不存在的 id、非法 item、重复删除都返回 `{"status":"ok"}`。
+   */
+  removeContent(input: { id: number | string; item: "community" | "community_reply" }): Promise<Json> {
+    return this.post("/api/v3/remove_content", { id: input.id, item: input.item });
+  }
+
   /** 开关式：调一次切换一次 */
   like(cid: number | string): Promise<Json> {
     return this.post("/api/v3/community_like", { cid });
