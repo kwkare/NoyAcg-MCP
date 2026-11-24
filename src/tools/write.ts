@@ -172,7 +172,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
     {
       title: "发帖（社区）",
       description:
-        "在社区发一条帖子，可选带图。⚠️ 不可撤销：站点没有删帖接口，帖子 90 天后自动过期，但期间无法删除；" +
+        "在社区发一条帖子，可选带图。发出后可用 noy_delete_post 删除自己的帖子，删除不可恢复；" +
         "⚠️ 图片是否打码由服务端判定（spoiler），客户端无法指定；发帖不返回帖子 ID，本工具会去列表里回查。" +
         "正文支持表情包代码（如 `[noygirl:yeah]`）与 `NID<书籍ID>` 引用。",
       inputSchema: {
@@ -257,7 +257,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       title: "发评论 / 回复评论",
       description:
         "在帖子下发评论。不带 reply_to_rid 是顶层评论（reply_id=-1）；带 reply_to_rid 是楼中楼回复。" +
-        "正文支持表情包代码。⚠️ 评论没有删除接口，发了就一直在；接口不返回评论 ID，本工具会回读列表找出新 rid。\n" +
+        "正文支持表情包代码。自己的评论可在符合归属校验时使用 noy_delete_comment 删除；接口不返回评论 ID，本工具会回读列表找出新 rid。\n" +
         "⏳ 站点对评论有**约 25 秒冷却**：连续发第二条会失败。本工具会自动等待到冷却结束再提交（最多约 25 秒），" +
         "不需要 agent 自己 sleep；但连续发多条时请预期每次调用会变慢。",
       inputSchema: {

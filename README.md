@@ -18,10 +18,10 @@ agent：今天热帖是……（附带评论里在吵什么）
 - **写操作结果确认**：成功提交后立即记录审计；回读失败时提示先检查站点，避免重复提交。评论、点赞、徽章及签到的并发操作在单个 MCP 进程内排队
 - **图片和删除校验**：图片重定向逐跳检查站点地址，下载上限 20 MB；删除评论前确认目标出现在当前可见评论中且属于当前账号
 - **浏览器登录**：`noy_browser_login` 打开独立 Chrome 窗口，用户自己登录，自动抓 `NOY_SESSION` 并保存，**当前进程立刻生效**
-- **24 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
+- **24 个默认任务级工具**：覆盖「看帖」「发评论」「签到」等任务；配置可关闭部分工具或额外启用账号密码登录
 - **6 个资源**（`noy://`）：主页资料、首页榜单、最新帖、未读数、表情包代码表，可按需加载 / 缓存
 - **2 个提示词模板**：社区速览、评论起草
-- **写操作直接执行 + 审计日志**：每次发帖 / 评论 / 点赞 / 签到 / 徽章变更都追加一行 JSONL
+- **写操作直接执行 + 审计日志**：成功提交写操作后尽力追加 JSONL，记录提交及回读结果；日志写入失败会输出到 stderr
 - **把踩过的坑写进工具里**：`allow-adult` 默认 false、点赞幂等、徽章 ID 校验、签到先查再签、表情包大小写检查……
 
 ## 安装
@@ -96,11 +96,13 @@ node dist/index.js login --timeout 120
 | `NOY_BROWSER_HEADLESS` | `false` | 无头模式（服务器 / CI） |
 | `NOY_DISABLE_BROWSER_LOGIN` | `false` | `true` 时不注册 `noy_browser_login`（无桌面环境） |
 | `NOY_ALLOW_ADULT` | `false` | 内容分级默认值；工具参数 `adult` 可逐次覆盖 |
-| `NOY_READONLY` | `false` | `true` 时**只注册只读工具**，写操作从工具列表里消失 |
+| `NOY_READONLY` | `false` | `true` 时不注册社区、图床及账号密码登录等写工具；浏览器登录和登出仍可用 |
 | `NOY_AUDIT_LOG` | `~/.noyacg-mcp/audit.jsonl` | 写操作审计日志；设成 `off` 关闭 |
 | `NOY_TIMEOUT_MS` | `30000` | 普通请求每次尝试的超时 |
 | `NOY_UPLOAD_TIMEOUT_MS` | `120000` | 图床上传及下载每次尝试的超时（服务端会转码，比较慢） |
-| `NOY_MAX_UPLOAD_MB` | `20` | 单张图片大小上限 |
+| `NOY_MAX_UPLOAD_MB` | `20` | 单张上传图片大小上限；下载图片固定上限为 20 MiB |
+| `NOY_COMMENT_COOLDOWN_MS` | `25000` | 同一进程内两次成功评论之间的最小间隔，须为正数 |
+| `NOY_IMAGE_CACHE_DIR` | `~/.noyacg-mcp/images` | 下载图片的本地缓存目录 |
 | `NOY_ALLOW_PASSWORD_LOGIN` | `false` | `true` 才注册 `noy_login`（见下方安全说明） |
 | `NOY_BASE_URL` / `NOY_BUCKET_URL` | 官方域名 | 指向自建 / 测试环境时用 |
 
@@ -129,21 +131,22 @@ node dist/index.js login --timeout 120
 | --- | --- | --- |
 | `noy_browser_login` | 打开浏览器让用户登录，自动抓 Cookie 并保存 | `action=open\|wait\|cancel`；独立 profile；**登录过就直接复用、不弹窗**；保存后立即生效 |
 | `noy_logout` | 清除本地登录态 | 默认只清本地；`revoke=true` 会调 `/api/logout` **吊销服务端会话**（不可逆） |
+| `noy_login` | 使用邮箱和密码登录 | 默认不注册；设置 `NOY_ALLOW_PASSWORD_LOGIN=true` 且未启用只读模式时可用 |
 
-### 写操作（**直接生效，无二次确认**）
+### 写操作（删除需显式确认）
 
 | 工具 | 作用 | 备注 |
 | --- | --- | --- |
 | `noy_upload_images` | 本地图片 → 图床，返回 `image/<file>` | 服务端统一转 webp |
-| `noy_create_post` | 发帖（可带图） | **无法删除**，90 天后自动过期 |
-| `noy_comment` | 顶层评论 / 楼中楼回复 | **无法删除**，会回读出新 rid |
+| `noy_create_post` | 发帖（可带图） | 发帖后尝试回查帖子 ID；可用 `noy_delete_post` 删除自己的帖子 |
+| `noy_comment` | 顶层评论 / 楼中楼回复 | 发出后尝试回读新 rid；可用 `noy_delete_comment` 删除符合校验条件的评论 |
 | `noy_edit_post` | 改标题 / 正文 | 改不了图片，且会覆盖原文 |
 | `noy_like_post` | 点赞 / 取消 | 先读后写，`action=like\|unlike\|toggle` |
 | `noy_checkin` | 每日签到 | 已签则跳过，返回积分变化 |
 | `noy_set_badge` | 佩戴 / 取消佩戴 | 先校验 ID（接口本身不校验） |
 | `noy_set_profile_image` | 设置头像 / 主页背景图 | 走 `upload_avatar` / `upload_bg`；**覆盖**旧图，会返回旧地址便于回滚 |
 | `noy_delete_post` | 删除自己的帖子 | `remove_content(item=community)`；必须 `confirm=true`；服务端不校验 id，结果以回读为准 |
-| `noy_delete_comment` | 删除自己的评论 | `remove_content(item=community_reply)`；同上，回读确认 |
+| `noy_delete_comment` | 删除自己的评论 | 必须 `confirm=true`，且目标须出现在当前可见评论或回复预览中并属于当前账号 |
 
 ## 资源
 
@@ -166,17 +169,17 @@ node dist/index.js login --timeout 120
 **这个 MCP 会真的操作你的账号。** 设计上的护栏：
 
 - **Cookie 只存在本地**：`~/.noyacg-mcp/session.json`（0600）与独立浏览器 profile；登录过程不经过第三方，密码直接输在 noymanga 的页面上
-- **写操作直接执行**（按需求如此），但每次都会写审计日志：`ts / tool / args / ok / result`，Cookie 与 token 自动打码
-- `NOY_READONLY=true` 可以一键把写工具从工具列表里摘掉，只留只读
+- **写操作会产生真实效果**：删除工具要求 `confirm=true`；写请求成功提交后尽力写入审计日志，日志失败时输出到 stderr。敏感字段会打码，审计也可能包含帖子、评论正文
+- `NOY_READONLY=true` 会关闭社区、图床和账号密码登录等写工具；`noy_browser_login` 和 `noy_logout` 仍然注册，后者的 `revoke=true` 可吊销服务端会话
 - `noy_like_post` / `noy_set_badge` 都是「先读当前状态 → 需要才调」，避免重复调用把自己翻转回去；同一 MCP 进程内按目标串行，其他进程或设备不受此锁约束
-- 删除评论时，仅能删除在当前可见评论及回复预览中确认属于当前账号的目标；分页中未显示的评论需要先取得可验证的目标信息
+- 删除评论时，仅能删除在当前详情页的评论或回复预览中确认属于当前账号的目标；未显示的评论无法通过当前删除工具确认归属，因此不会执行删除
 - `noy_set_badge` 会先校验 ID：官方接口**不校验**，传垃圾值会永久写进 `show` 数组
 - `noy_create_post` 会检查正文里的表情包代码：大小写写错会被前端**静默吞掉**（不是显示成文字），工具会直接警告
 - 账号密码登录默认**不注册**（密码会进对话记录与宿主日志），要开得显式设 `NOY_ALLOW_PASSWORD_LOGIN=true`
 
 其它事实（都会影响 agent 的判断）：
 
-- 帖子 / 评论有删除接口 `POST /api/v3/remove_content`（`item=community` / `community_reply`），2026-10-31 实测；**服务端不校验** id / item / 重复删除，一律返回 ok——工具会回读确认真实结果。web 端只有评论删除按钮，没有删帖按钮
+- 帖子 / 评论有删除接口 `POST /api/v3/remove_content`（`item=community` / `community_reply`），2026-10-31 实测；**服务端不校验** id / item / 重复删除，一律返回 ok——工具会尝试回读，评论不在当前预览中并不等于完全确认删除。web 端只有评论删除按钮，没有删帖按钮
 - 点赞、徽章佩戴都是**开关式**，重试一次 = 翻转回去
 - 签到按 **UTC+8 00:00** 重置，每次 +1 积分；重复签到返回**数字** `status=500`
 - 内容分「全年龄 / R18」两套**互斥**内容池，`allow-adult` 不同则榜单、标签全变
@@ -186,14 +189,14 @@ node dist/index.js login --timeout 120
 
 ```bash
 npm run build      # tsc
-npm test           # 38 个用例：单元 + 集成（内置假站点 + headless Chrome，不碰真实站点）
+npm test           # 单元 + 集成测试，运行前自动 build；不碰真实站点
 npm run smoke      # 真正拉起 stdio server 走一遍 JSON-RPC
 node dist/index.js status   # 检查真实登录态
 ```
 
-测试分四层（36 个用例）：
+测试与检查分四层：
 
-1. `test/client.test.mjs`：HTTP 客户端（编码、Cookie、分级头、错误映射、multipart、图片 URL 拼接）
+1. `test/client.test.mjs` + `test/retry.test.mjs`：HTTP 客户端、重试、响应错误及图片下载边界
 2. `test/tools.test.mjs` + `test/mock-site.mjs`：**完整 MCP 协议**跑全部工具，含发帖 / 评论 / 点赞 / 签到 / 徽章等写流程（对假站点，不会产生真实内容）
 3. `test/session.test.mjs` + `test/browser-login.test.mjs`：会话文件读写与权限、headless Chrome 上的真实登录流程（抓 cookie → 校验 → 落盘）、MCP 工具端到端；本机没有浏览器时自动 skip
 4. `scripts/smoke.mjs`：未登录状态下的工具清单、资源、提示词、错误提示
@@ -205,7 +208,7 @@ node dist/index.js status   # 检查真实登录态
 | 限制 | 表现 | 本服务的处理 |
 | --- | --- | --- |
 | 图床防盗链 | 直接抓 `bucket.noymanga.com/...` 会 **403**（浏览器能看是因为自动带 `Referer`） | `noy_download_image` 自动带 Referer 下载到本地并返回路径；也可以 `inline=true` 直接返回图片内容 |
-| 评论冷却 | 连续发评论会失败（约 **25 秒**） | `noy_comment` 会先读上次成功时间，**自动等待**到冷却结束再发；工具描述里也写了这条 |
+| 评论冷却 | 连续发评论会失败（约 **25 秒**） | `noy_comment` 根据同一 MCP 进程上次成功评论的时间自动等待；其他进程或设备的评论不在记录范围内 |
 
 ## 许可证
 
