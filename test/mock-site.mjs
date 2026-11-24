@@ -85,7 +85,12 @@ export async function startMockSite() {
     const url = new URL(req.url, "http://mock");
     const path = url.pathname;
     const body = await readBody(req);
-    state.calls.push({ path, body });
+    state.calls.push({ path, body, adult: req.headers["allow-adult"] });
+    if (state.failPath === path) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "error" }));
+      return;
+    }
 
     // 需要登录的端点：没 cookie 一律 status=login（和真站点一致）
     const authed = String(req.headers.cookie ?? "").includes("NOY_SESSION=");

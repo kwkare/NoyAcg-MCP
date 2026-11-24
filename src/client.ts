@@ -10,8 +10,10 @@ export interface RequestOptions {
   /** allow-adult 请求头；不传则用配置里的默认值 */
   adult?: boolean;
   timeoutMs?: number;
-  /** 标记无副作用的请求，可在响应不确定时重试 */
+  /** 只读请求的重试次数；0 表示禁止重试 */
   retry?: number;
+  /** 下载响应的最大字节数 */
+  maxResponseBytes?: number;
 }
 
 export interface UploadInput {
@@ -20,6 +22,7 @@ export interface UploadInput {
   mime: string;
   /** 图床路径，默认发帖用的 /api/upload_image */
   path?: string;
+  adult?: boolean;
   /** 是否要求响应里带 `file`。发帖图片需要；头像 / 背景图只返回 `status: ok`（默认 true） */
   expectFile?: boolean;
 }
@@ -76,8 +79,8 @@ export class NoyClient {
   }
 
   private async request(url: string, init: RequestInit, opts: RequestOptions): Promise<Response> {
-    const retries = 2;
-    const safe = opts.retry !== undefined || init.method === "GET";
+    const retries = opts.retry ?? 2;
+    const safe = (opts.retry ?? 0) > 0 || init.method === "GET";
     const timeout = opts.timeoutMs ?? this.cfg.timeoutMs;
     let lastError: unknown;
 
@@ -90,10 +93,33 @@ export class NoyClient {
         }
         if (!res.ok) return res;
         // 响应头到达后仍可能超时或断线，完整读取后才算成功。
-        const data = await res.arrayBuffer();
+        let data: Uint8Array;
+        if (opts.maxResponseBytes !== undefined && res.body) {
+          const reader = res.body.getReader();
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              size += value.byteLength;
+              if (size > opts.maxResponseBytes) {
+                await reader.cancel();
+                throw new NoyError(`图片超过下载大小上限（${opts.maxResponseBytes} 字节）`);
+              }
+              chunks.push(value);
+            }
+          } finally {
+            reader.releaseLock();
+          }
+          data = Buffer.concat(chunks);
+        } else {
+          data = new Uint8Array(await res.arrayBuffer());
+        }
         return new Response([204, 205, 304].includes(res.status) ? null : data, { status: res.status, statusText: res.statusText, headers: res.headers });
       } catch (err) {
         lastError = err;
+        if (err instanceof NoyError && err.message.startsWith("图片超过下载大小上限")) throw err;
         const code = (err as { cause?: { code?: string } })?.cause?.code;
         const beforeConnect = ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"].includes(code ?? "");
         if (attempt < retries && (safe || beforeConnect)) {
@@ -108,6 +134,10 @@ export class NoyClient {
   }
 
   private async parse<T>(res: Response, path: string): Promise<T> {
+    if (!res.ok) {
+      const uncertain = res.status >= 500 ? "；写操作可能已经执行，请先检查站点状态，避免重复提交" : "";
+      throw new NoyError(`HTTP ${res.status}：${path}${uncertain}`);
+    }
     const raw = await res.text();
     if (!raw.trim()) throw new NoyError(`空响应：${path}（HTTP ${res.status}）`);
     try {
@@ -192,21 +222,21 @@ export class NoyClient {
   /** 首页聚合。v=3 才会返回 stream（番剧推荐），不带则这个 key 直接不存在 */
   home(adult?: boolean, includeStream = true): Promise<Json> {
     const form: FormBody = includeStream ? { v: 3, stream_all: 1 } : {};
-    return this.post("/api/home", form, { adult, retry: 1 });
+    return this.post("/api/home", form, { adult, retry: 2 });
   }
 
   ads(adult?: boolean): Promise<Json> {
-    return this.post("/api/v3/ads", {}, { adult, retry: 1 });
+    return this.post("/api/v3/ads", {}, { adult, retry: 2 });
   }
 
   /** 最轻的会话探活：无副作用、返回小 */
   userinfo(adult?: boolean): Promise<Json> {
-    return this.post("/api/v3/userinfo", {}, { adult, retry: 1 });
+    return this.post("/api/v3/userinfo", {}, { adult, retry: 2 });
   }
 
   /** 徽章全集 + 佩戴中的 ID 列表（`show`，字符串数组） */
   badges(): Promise<Json> {
-    return this.post("/api/badge", {}, { retry: 1 });
+    return this.post("/api/badge", {}, { retry: 2 });
   }
 
   setBadgeShow(badgeId: number | string): Promise<Json> {
@@ -216,7 +246,7 @@ export class NoyClient {
   // ------------------------------------------------------------------ 签到
 
   signinRecord(): Promise<Json> {
-    return this.post("/api/v4/signin/record", {}, { retry: 1 });
+    return this.post("/api/v4/signin/record", {}, { retry: 2 });
   }
 
   /** 重复签到会返回数字 status=500，不算异常，由调用方判断 */
@@ -228,12 +258,12 @@ export class NoyClient {
 
   /** 书籍详情：info + 推荐 + 章节（按分类）+ 首屏评论 + 售价 */
   bookDetail(bid: number | string, adult?: boolean): Promise<Json> {
-    return this.get(`/api/v4/book/${bid}`, { adult, retry: 1 });
+    return this.get(`/api/v4/book/${bid}`, { adult, retry: 2 });
   }
 
   /** 书籍评论（分页）；结构与帖子评论一致，但主键叫 cid */
   bookComments(bid: number | string, page = 1, adult?: boolean): Promise<Json> {
-    return this.get(`/api/v4/comment/book/${bid}/comments?page=${page}`, { adult, retry: 1 });
+    return this.get(`/api/v4/comment/book/${bid}/comments?page=${page}`, { adult, retry: 2 });
   }
 
   // ------------------------------------------------------------------ 社区
@@ -246,43 +276,43 @@ export class NoyClient {
     return this.post(
       "/api/v3/community_list",
       { page: input.page ?? 1, type: input.type ?? "new", filter: input.filter ?? "" },
-      { adult: input.adult, retry: 1 },
+      { adult: input.adult, retry: 2 },
     );
   }
 
   postDetail(postId: number | string, adult?: boolean): Promise<Json> {
-    return this.post(`/api/v4/community/post/${postId}`, {}, { adult, retry: 1 });
+    return this.post(`/api/v4/community/post/${postId}`, {}, { adult, retry: 2 });
   }
 
   postComments(postId: number | string, page = 1, adult?: boolean): Promise<Json> {
-    return this.post(`/api/v4/community/post/${postId}/comments`, { page }, { adult, retry: 1 });
+    return this.post(`/api/v4/community/post/${postId}/comments`, { page }, { adult, retry: 2 });
   }
 
   commentReplies(postId: number | string, rid: number | string, page = 1, adult?: boolean): Promise<Json> {
     return this.post(
       `/api/v4/community/post/${postId}/comment/${rid}/replies`,
       { page },
-      { adult, retry: 1 },
+      { adult, retry: 2 },
     );
   }
 
   /** replyToRid = -1 发顶层评论；填评论 rid = 楼中楼回复 */
-  reply(input: { postId: number | string; text: string; replyToRid?: number; platform?: string }): Promise<Json> {
+  reply(input: { postId: number | string; text: string; replyToRid?: number; platform?: string; adult?: boolean }): Promise<Json> {
     return this.post(`/api/v4/community/post/${input.postId}/reply`, {
       reply_id: input.replyToRid ?? -1,
       text: input.text,
       platform: input.platform ?? "web",
       hide_ip: "false",
-    });
+    }, { adult: input.adult });
   }
 
-  editPost(input: { postId: number | string; title: string; content: string; platform?: string }): Promise<Json> {
+  editPost(input: { postId: number | string; title: string; content: string; platform?: string; adult?: boolean }): Promise<Json> {
     return this.post("/api/v3/edit_community_post", {
       id: input.postId,
       title: input.title,
       content: input.content,
       platform: input.platform ?? "web",
-    });
+    }, { adult: input.adult });
   }
 
   /**
@@ -292,33 +322,33 @@ export class NoyClient {
    *
    * ⚠️ 服务端**完全不校验**：不存在的 id、非法 item、重复删除都返回 `{"status":"ok"}`。
    */
-  removeContent(input: { id: number | string; item: "community" | "community_reply" }): Promise<Json> {
-    return this.post("/api/v3/remove_content", { id: input.id, item: input.item });
+  removeContent(input: { id: number | string; item: "community" | "community_reply"; adult?: boolean }): Promise<Json> {
+    return this.post("/api/v3/remove_content", { id: input.id, item: input.item }, { adult: input.adult });
   }
 
   /** 开关式：调一次切换一次 */
-  like(cid: number | string): Promise<Json> {
-    return this.post("/api/v3/community_like", { cid });
+  like(cid: number | string, adult?: boolean): Promise<Json> {
+    return this.post("/api/v3/community_like", { cid }, { adult });
   }
 
-  createPost(input: { title: string; content: string; imageRefs?: string[]; platform?: string }): Promise<Json> {
+  createPost(input: { title: string; content: string; imageRefs?: string[]; platform?: string; adult?: boolean }): Promise<Json> {
     const form: FormBody = {
       title: input.title,
       content: input.content,
       platform: input.platform ?? "web",
     };
     if (input.imageRefs?.length) form.image = JSON.stringify(input.imageRefs);
-    return this.post("/api/v3/send_community", form);
+    return this.post("/api/v3/send_community", form, { adult: input.adult });
   }
 
   // ------------------------------------------------------------------ 讯息
 
   messages(input: { type: "reply" | "community_reply" | "sysmsg"; page?: number }): Promise<Json> {
-    return this.post("/api/v3/get_msg", { page: input.page ?? 1, type: input.type, v: 3 }, { retry: 1 });
+    return this.post("/api/v3/get_msg", { page: input.page ?? 1, type: input.type, v: 3 }, { retry: 2 });
   }
 
   msgCount(): Promise<Json> {
-    return this.post("/api/v4/msg/count", {}, { retry: 1 });
+    return this.post("/api/v4/msg/count", {}, { retry: 2 });
   }
 
   // ------------------------------------------------------------------ 图床
@@ -349,7 +379,7 @@ export class NoyClient {
           // 注意：不设 content-type，让 fetch 自己生成 boundary；也不要带 Cookie
           origin: this.cfg.baseUrl,
           referer: `${this.cfg.baseUrl}/`,
-          "allow-adult": this.adult() ? "true" : "false",
+          "allow-adult": this.adult(input.adult) ? "true" : "false",
           "user-agent": `noyacg-mcp/${VERSION}`,
         },
       },
@@ -396,8 +426,8 @@ export class NoyClient {
     } else {
       url = new URL(`${this.cfg.bucketUrl}/image/${raw.replace(/^\/+/, "")}`);
     }
-    const allowed = new Set([new URL(this.cfg.baseUrl).host, new URL(this.cfg.bucketUrl).host]);
-    if (!allowed.has(url.host)) {
+    const allowed = new Set([new URL(this.cfg.baseUrl).origin, new URL(this.cfg.bucketUrl).origin]);
+    if (url.username || url.password || !allowed.has(url.origin)) {
       throw new NoyError(`只允许下载本站图片：${url.host} 不在白名单内`);
     }
     return url.href;
@@ -408,20 +438,29 @@ export class NoyClient {
    * 直接 GET 图床会 403 —— 浏览器能看是因为它自动带了 Referer。
    */
   async downloadImage(source: string): Promise<{ buffer: Buffer; mimeType: string; url: string }> {
-    const url = this.resolveImageUrl(source);
-    const res = await this.request(
-      url,
-      {
-        method: "GET",
-        headers: {
-          accept: "image/avif,image/webp,image/*,*/*;q=0.8",
-          referer: `${this.cfg.baseUrl}/`,
-          origin: this.cfg.baseUrl,
-          "user-agent": `noyacg-mcp/${VERSION}`,
+    let url = this.resolveImageUrl(source);
+    let res: Response;
+    for (let redirects = 0; ; redirects += 1) {
+      res = await this.request(
+        url,
+        {
+          method: "GET",
+          redirect: "manual",
+          headers: {
+            accept: "image/avif,image/webp,image/*,*/*;q=0.8",
+            referer: `${this.cfg.baseUrl}/`,
+            origin: this.cfg.baseUrl,
+            "user-agent": `noyacg-mcp/${VERSION}`,
+          },
         },
-      },
-      { timeoutMs: this.cfg.uploadTimeoutMs },
-    );
+        { timeoutMs: this.cfg.uploadTimeoutMs, maxResponseBytes: 20 * 1024 * 1024 },
+      );
+      if (![301, 302, 303, 307, 308].includes(res.status)) break;
+      const location = res.headers.get("location");
+      await res.body?.cancel();
+      if (!location || redirects >= 5) throw new NoyError("图片重定向无效或次数过多");
+      url = this.resolveImageUrl(new URL(location, url).href);
+    }
 
     if (res.status === 403) {
       throw new NoyError(

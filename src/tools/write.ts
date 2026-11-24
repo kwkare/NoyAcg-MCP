@@ -23,6 +23,27 @@ let lastCommentAt = 0;
 
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
+// 同一进程内按操作和目标排队，覆盖读取状态、写入及回读的整个过程。
+const locks = new WeakMap<object, Map<string, Promise<void>>>();
+async function withLock<T>(owner: object, key: string, fn: () => Promise<T>): Promise<T> {
+  let entries = locks.get(owner);
+  if (!entries) { entries = new Map(); locks.set(owner, entries); }
+  const previous = entries.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  entries.set(key, current);
+  await previous;
+  try { return await fn(); }
+  finally {
+    if (entries.get(key) === current) entries.delete(key);
+    release();
+  }
+}
+
+function verificationWarning(operation: string): string {
+  return `⚠️ ${operation}已提交，但后续回读失败，结果尚未核实。请先检查站点状态，不要重复提交。`;
+}
+
 interface Uploaded {
   source: string;
   file: string;
@@ -33,10 +54,11 @@ interface Uploaded {
 async function uploadLocalFiles(
   ctx: ToolContext,
   paths: string[],
-  options: { path?: string; expectFile?: boolean } = {},
+  options: { path?: string; expectFile?: boolean; adult?: boolean } = {},
 ): Promise<Uploaded[]> {
   const uploaded: Uploaded[] = [];
   for (const raw of paths) {
+    try {
     const filePath = resolve(raw);
     const info = await stat(filePath).catch(() => null);
     if (!info?.isFile()) throw new NoyError(`找不到文件：${filePath}`);
@@ -55,8 +77,14 @@ async function uploadLocalFiles(
       mime,
       path: options.path,
       expectFile: options.expectFile,
+      adult: options.adult,
     });
     uploaded.push({ source: filePath, file: result.file, imageRef: result.imageRef, bytes: data.byteLength });
+    await audit(ctx.cfg, { tool: "noy_upload_image", args: { path: filePath, endpoint: options.path ?? "/api/upload_image" }, ok: true, result: { file: result.file, phase: "submitted" } });
+    } catch (err) {
+      if (!uploaded.length) throw err;
+      throw new NoyError(`部分图片已上传：${uploaded.map((u) => u.imageRef || u.source).join("、")}；后续上传失败：${err instanceof Error ? err.message : String(err)}。请勿重复上传已完成的图片。`);
+    }
   }
   return uploaded;
 }
@@ -89,9 +117,9 @@ function stickerWarnings(text: string): string[] {
 }
 
 /** 发帖 / 评论后，列表有一定延迟；轮询几次尽量拿到新 ID */
-async function findNewPostId(ctx: ToolContext, uid: number, title: string, sinceSec: number): Promise<number | null> {
+async function findNewPostId(ctx: ToolContext, uid: number, title: string, sinceSec: number, adult?: boolean): Promise<number | null> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const list = await ctx.client.communityList({ page: 1, type: "new" });
+    const list = await ctx.client.communityList({ page: 1, type: "new", adult });
     const posts: Record<string, any>[] = list.info ?? [];
     const hit = posts.find((p) => p.uid === uid && p.title === title && Number(p.time) >= sinceSec - 5);
     if (hit) return Number(hit.id);
@@ -170,7 +198,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
           // 依次判断：本地文件 → 已是发帖引用 → 已上传的文件名
           const exists = await stat(resolve(item)).then((info) => info.isFile()).catch(() => false);
           if (exists) {
-            const [result] = await uploadLocalFiles(ctx, [item]);
+            const [result] = await uploadLocalFiles(ctx, [item], { adult });
             if (result) {
               uploaded.push(result);
               imageRefs.push(result.imageRef);
@@ -195,9 +223,12 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         const me = (await client.userinfo(adult)).userinfo ?? {};
         const startedAt = Math.floor(Date.now() / 1000);
 
-        const payload = await client.createPost({ title, content, imageRefs, platform });
+        const payload = await client.createPost({ title, content, imageRefs, platform, adult });
+        await audit(cfg, { tool: "noy_create_post", args: { title, content, images: imageRefs, platform }, ok: true, result: { status: payload.status, phase: "submitted" } });
 
-        const postId = await findNewPostId(ctx, Number(me.Uid), title, startedAt);
+        let postId: number | null;
+        try { postId = await findNewPostId(ctx, Number(me.Uid), title, startedAt, adult); }
+        catch { return verificationWarning("发帖"); }
         await audit(cfg, {
           tool: "noy_create_post",
           args: { title, content, images: imageRefs, platform },
@@ -244,7 +275,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ post_id, text, reply_to_rid, platform, adult }) =>
-      run(async () => {
+      run(() => withLock(client, "comment", async () => {
         const before = await client.postDetail(post_id, adult);
         const existing = collectRids(before.data?.comments ?? []);
         const me = (await client.userinfo(adult)).userinfo ?? {};
@@ -261,7 +292,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
 
         let payload: Record<string, any>;
         try {
-          payload = await client.reply({ postId: post_id, text, replyToRid: reply_to_rid, platform });
+          payload = await client.reply({ postId: post_id, text, replyToRid: reply_to_rid, platform, adult });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (message.includes("status=error")) {
@@ -273,12 +304,15 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
           throw err;
         }
         lastCommentAt = Date.now();
+        await audit(cfg, { tool: "noy_comment", args: { post_id, text, reply_to_rid }, ok: true, result: { status: payload.status, phase: "submitted" } });
 
         // 回读找新 rid（接口不返回）
         let found: Record<string, any> | null = null;
         for (let attempt = 0; attempt < 4 && !found; attempt += 1) {
           await sleep(attempt === 0 ? 300 : 700);
-          const after = await client.postDetail(post_id, adult);
+          let after: Record<string, any>;
+          try { after = await client.postDetail(post_id, adult); }
+          catch { return verificationWarning("评论"); }
           const pool: Record<string, any>[] = [];
           for (const comment of after.data?.comments ?? []) {
             pool.push(comment, ...(comment.replies ?? []));
@@ -307,7 +341,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         }
         if (warnings.length) lines.push("", ...warnings);
         return lines.join("\n");
-      }),
+      })),
   );
 
   server.registerTool(
@@ -335,8 +369,11 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         const nextContent = content ?? String(before.content ?? "");
         const warnings = content ? stickerWarnings(content) : [];
 
-        const payload = await client.editPost({ postId: post_id, title: nextTitle, content: nextContent });
-        const after = (await client.postDetail(post_id, adult)).data?.post ?? {};
+        const payload = await client.editPost({ postId: post_id, title: nextTitle, content: nextContent, adult });
+        await audit(cfg, { tool: "noy_edit_post", args: { post_id, title: nextTitle, content: nextContent }, ok: true, result: { status: payload.status, phase: "submitted" } });
+        let after: Record<string, any>;
+        try { after = (await client.postDetail(post_id, adult)).data?.post ?? {}; }
+        catch { return verificationWarning("编辑"); }
         await audit(cfg, {
           tool: "noy_edit_post",
           args: { post_id, title: nextTitle, content: nextContent },
@@ -374,7 +411,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async ({ post_id, action, adult }) =>
-      run(async () => {
+      run(() => withLock(client, `like:${post_id}`, async () => {
         const before = (await client.postDetail(post_id, adult)).data?.post ?? {};
         const wasLiked = Boolean(before.is_like);
         const wantLiked = action === "toggle" ? !wasLiked : action === "like";
@@ -383,8 +420,11 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
           return `ℹ️ 已经是「${wantLiked ? "已赞" : "未赞"}」状态，没有调用接口（点赞数 ${before.like}）。`;
         }
 
-        const payload = await client.like(post_id);
-        const after = (await client.postDetail(post_id, adult)).data?.post ?? {};
+        const payload = await client.like(post_id, adult);
+        await audit(cfg, { tool: "noy_like_post", args: { post_id, action }, ok: true, result: { status: payload.status, phase: "submitted" } });
+        let after: Record<string, any>;
+        try { after = (await client.postDetail(post_id, adult)).data?.post ?? {}; }
+        catch { return verificationWarning("点赞操作"); }
         await audit(cfg, {
           tool: "noy_like_post",
           args: { post_id, action },
@@ -393,16 +433,13 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         });
 
         if (Boolean(after.is_like) === wasLiked) {
-          throw new NoyError(
-            `点赞没有生效：接口返回 status=${String(payload.status)} 但帖子状态没变。` +
-              "常见原因是 post_id 不存在（该接口不校验 cid），请先 noy_read_post 确认 ID。",
-          );
+          return `⚠️ 已提交点赞操作，但回读时状态未变化（status=${String(payload.status)}）。请先检查帖子，避免重复切换。`;
         }
         return [
           `✅ ${wantLiked ? "已点赞" : "已取消点赞"} #${post_id}`,
           `点赞数：${before.like} → ${after.like} · is_like：${wasLiked} → ${after.is_like}`,
         ].join("\n");
-      }),
+      })),
   );
 
   server.registerTool(
@@ -415,16 +452,21 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async () =>
-      run(async () => {
+      run(() => withLock(client, "checkin", async () => {
         const before = await client.signinRecord();
         if (before.today) {
           return `ℹ️ 今天已经签过了（连续 ${before.continuous} 天），没有调用签到接口。`;
         }
         const integralBefore = Number((await client.userinfo()).userinfo?.Integral ?? 0);
         const payload = await client.signinSign();
-
-        const after = await client.signinRecord();
-        const integralAfter = Number((await client.userinfo()).userinfo?.Integral ?? 0);
+        await audit(cfg, { tool: "noy_checkin", args: {}, ok: payload.status === 200, result: { status: payload.status, phase: "submitted" } });
+        if (payload.status !== 200) throw new NoyError(`签到失败：status=${String(payload.status)} / msg=${String(payload.msg ?? "?")}`);
+        let after: Record<string, any>;
+        let integralAfter: number;
+        try {
+          after = await client.signinRecord();
+          integralAfter = Number((await client.userinfo()).userinfo?.Integral ?? 0);
+        } catch { return verificationWarning("签到"); }
         await audit(cfg, {
           tool: "noy_checkin",
           args: {},
@@ -445,7 +487,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
           `积分：${integralBefore} → ${integralAfter}（${delta >= 0 ? "+" : ""}${delta}）`,
           `今天状态：today=${after.today}`,
         ].join("\n");
-      }),
+      })),
   );
 
   server.registerTool(
@@ -462,7 +504,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async ({ badge_id, wear }) =>
-      run(async () => {
+      run(() => withLock(client, `badge:${badge_id}`, async () => {
         const payload = await client.badges();
         const all: Record<string, any>[] = payload.data ?? [];
         const badge = all.find((b) => Number(b.Id) === badge_id);
@@ -479,7 +521,10 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         }
 
         const result = await client.setBadgeShow(badge_id);
-        const after = await client.badges();
+        await audit(cfg, { tool: "noy_set_badge", args: { badge_id, wear }, ok: true, result: { status: result.status, phase: "submitted" } });
+        let after: Record<string, any>;
+        try { after = await client.badges(); }
+        catch { return verificationWarning("徽章操作"); }
         const nowWearing = new Set<string>((after.show ?? []).map(String));
         await audit(cfg, {
           tool: "noy_set_badge",
@@ -495,7 +540,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
           "",
           "提示：`show` 的顺序就是佩戴顺序；脏值（不存在的 ID）会一直留在里面，只能再切一次清掉。",
         ].join("\n");
-      }),
+      })),
   );
 
   server.registerTool(
@@ -527,7 +572,12 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         }
         const before = await client.postDetail(post_id);
         const existed = before.status === "ok" && before.data?.post?.id;
+        const uid = Number((await client.userinfo()).userinfo?.Uid);
+        if (!Number.isSafeInteger(uid) || uid <= 0 || Number(before.data?.post?.uid) !== uid) {
+          throw new NoyError("无法确认帖子属于当前账号，未执行删除。");
+        }
         const payload = await client.removeContent({ id: post_id, item: "community" });
+        await audit(cfg, { tool: "noy_delete_post", args: { post_id, confirm }, ok: true, result: { status: payload.status, phase: "submitted" } });
         const after = await client.postDetail(post_id).catch((err) => ({
           status: err instanceof NoyApiError ? err.status : `err:${String(err).slice(0, 40)}`,
         }));
@@ -543,7 +593,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         }
         return [
           gone ? `✅ 帖子 #${post_id} 已删除（详情现在返回 not_found）` : `⚠️ 已调用删除接口，但详情状态是 ${String(after.status)}，请确认`,
-          "此操作不可恢复；帖子已从社区列表消失。",
+          gone ? "此操作不可恢复；帖子详情已不可访问。" : "删除结果尚未确认，请检查帖子状态。",
         ].join("\n");
       }),
   );
@@ -575,9 +625,17 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         const pool: Record<string, any>[] = [];
         for (const comment of before.data?.comments ?? []) pool.push(comment, ...(comment.replies ?? []));
         const target = pool.find((c) => Number(c.rid) === rid);
+        if (!target) throw new NoyError(`当前帖子可见评论中未找到 rid ${rid}，无法确认归属，未执行删除。`);
+        const uid = Number((await client.userinfo(adult)).userinfo?.Uid);
+        if (!Number.isSafeInteger(uid) || uid <= 0 || Number(target.uid) !== uid) {
+          throw new NoyError("无法确认评论属于当前账号，未执行删除。");
+        }
 
-        const payload = await client.removeContent({ id: rid, item: "community_reply" });
-        const after = await client.postDetail(post_id, adult);
+        const payload = await client.removeContent({ id: rid, item: "community_reply", adult });
+        await audit(cfg, { tool: "noy_delete_comment", args: { post_id, rid, confirm }, ok: true, result: { status: payload.status, phase: "submitted" } });
+        let after: Record<string, any>;
+        try { after = await client.postDetail(post_id, adult); }
+        catch { return verificationWarning("删除评论"); }
         const poolAfter: Record<string, any>[] = [];
         for (const comment of after.data?.comments ?? []) poolAfter.push(comment, ...(comment.replies ?? []));
         const stillThere = poolAfter.some((c) => Number(c.rid) === rid);
@@ -592,7 +650,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
             ? `⚠️ 删除前就没找到 rid ${rid}（服务端不校验 id，接口照常返回 ok）。`
             : stillThere
               ? `⚠️ 接口返回 ok，但回读时评论仍在，请人工确认。`
-              : `✅ 评论 rid ${rid} 已删除（回读确认不在了）`,
+              : `✅ 评论 rid ${rid} 已提交删除，当前回读页面中未看到；分页或预览变化时请进一步确认。`,
           "此操作不可恢复。",
         ].join("\n");
       }),
@@ -620,11 +678,13 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         const oldRelative = String(before[field] ?? "");
         const oldUrl = client.bucketImageUrl(oldRelative);
 
-        const [uploaded] = await uploadLocalFiles(ctx, [path], { path: `/api/upload_${kind}`, expectFile: false });
+        const [uploaded] = await uploadLocalFiles(ctx, [path], { path: `/api/upload_${kind}`, expectFile: false, adult });
         if (!uploaded) throw new NoyError("上传失败：没有拿到结果");
 
         // 回读确认：服务端是否真的把新文件写进了资料
-        const after = (await client.userinfo(adult)).userinfo ?? {};
+        let after: Record<string, any>;
+        try { after = (await client.userinfo(adult)).userinfo ?? {}; }
+        catch { return verificationWarning(kind === "avatar" ? "头像更新" : "背景图更新"); }
         const newRelative = String(after[field] ?? "");
         const newUrl = client.bucketImageUrl(newRelative);
         const changed = newRelative !== "" && newRelative !== oldRelative;
@@ -673,7 +733,10 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         run(async () => {
           const cookie = await client.login(email, password);
           client.cfg.session = cookie;
-          const info = (await client.userinfo()).userinfo ?? {};
+          await audit(cfg, { tool: "noy_login", args: { email }, ok: true, result: { phase: "submitted" } });
+          let info: Record<string, any>;
+          try { info = (await client.userinfo()).userinfo ?? {}; }
+          catch { return verificationWarning("登录"); }
           await audit(cfg, { tool: "noy_login", args: { email }, ok: true, result: { uid: info.Uid } });
           return [
             `✅ 已登录：${info.Username}（UID ${info.Uid}）`,

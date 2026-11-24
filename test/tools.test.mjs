@@ -324,7 +324,7 @@ describe("tools 集成（假站点）", () => {
     const rid = Number(detail.text.match(/rid (\d+)/)?.[1]);
     assert.ok(rid, "应该拿到评论 rid");
     const delComment = await server.call("noy_delete_comment", { post_id: postId, rid, confirm: true });
-    assert.match(delComment.text, /已删除/);
+    assert.match(delComment.text, /已提交删除/);
 
     // 删帖子
     const delPost = await server.call("noy_delete_post", { post_id: postId, confirm: true });
@@ -334,6 +334,50 @@ describe("tools 集成（假站点）", () => {
     const after = await server.call("noy_read_post", { post_id: postId });
     assert.match(after.text, /不存在/);
     assert.match(after.text, /删除/);
+  });
+
+  it("并发点赞与徽章操作按目标串行，避免反复翻转", async () => {
+    const post = site.state.posts.find((p) => p.id === 78930);
+    post.is_like = false;
+    const before = site.state.calls.filter((c) => c.path === "/api/v3/community_like").length;
+    const results = await Promise.all([server.call("noy_like_post", { post_id: 78930, action: "like", adult: true }), server.call("noy_like_post", { post_id: 78930, action: "like", adult: true })]);
+    assert.ok(results.every((r) => !r.isError));
+    const calls = site.state.calls.filter((c) => c.path === "/api/v3/community_like");
+    assert.equal(calls.length - before, 1);
+    assert.equal(calls.at(-1).adult, "true");
+    site.state.show = site.state.show.filter((id) => id !== "12");
+    const badgeBefore = site.state.calls.filter((c) => c.path === "/api/v3/set_badge_show").length;
+    await Promise.all([server.call("noy_set_badge", { badge_id: 12, wear: true }), server.call("noy_set_badge", { badge_id: 12, wear: true })]);
+    assert.equal(site.state.calls.filter((c) => c.path === "/api/v3/set_badge_show").length - badgeBefore, 1);
+  });
+
+  it("并发评论遵守冷却时间", async () => {
+    const start = Date.now();
+    const results = await Promise.all([server.call("noy_comment", { post_id: 78930, text: "并发甲", adult: true }), server.call("noy_comment", { post_id: 78930, text: "并发乙", adult: true })]);
+    assert.ok(results.every((r) => !r.isError));
+    assert.ok(Date.now() - start >= 500);
+    assert.ok(site.state.calls.filter((c) => c.path.endsWith("/reply")).slice(-2).every((c) => c.adult === "true"));
+  });
+
+  it("发帖成功但回读失败仍返回已提交并留下审计", async () => {
+    site.state.failPath = "/api/v3/community_list";
+    try {
+      const result = await server.call("noy_create_post", { title: "回读失败测试", content: "内容", adult: true });
+      assert.equal(result.isError, false, result.text);
+      assert.match(result.text, /已提交.*回读失败/);
+      assert.equal(site.state.calls.filter((c) => c.path === "/api/v3/send_community").at(-1).adult, "true");
+      const audit = await readFile(auditPath, "utf8");
+      assert.match(audit, /回读失败测试/);
+    } finally { site.state.failPath = null; }
+  });
+
+  it("删除评论前必须确认目标存在且属于当前账号", async () => {
+    const before = site.state.calls.filter((c) => c.path === "/api/v3/remove_content").length;
+    const missing = await server.call("noy_delete_comment", { post_id: 78930, rid: 999999, confirm: true });
+    assert.equal(missing.isError, true);
+    const other = await server.call("noy_delete_comment", { post_id: 78930, rid: 460550, confirm: true });
+    assert.equal(other.isError, true);
+    assert.equal(site.state.calls.filter((c) => c.path === "/api/v3/remove_content").length, before);
   });
 
   it("noy_logout(revoke=true)：吊销服务端会话并清空当前登录态", async () => {

@@ -39,6 +39,27 @@ it("重试耗尽后返回次数和原因", async () => {
   assert.equal(calls, 3);
 });
 
+it("禁止重试的写请求只发送一次", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw networkError("ENOTFOUND"); };
+  await assert.rejects(() => client().post("/api/logout", {}, { retry: 0 }), /尝试 1 次/);
+  assert.equal(calls, 1);
+});
+
+it("HTTP 错误不能被 JSON 状态掩盖", async () => {
+  globalThis.fetch = async () => new Response('{"status":"ok"}', { status: 500 });
+  await assert.rejects(() => client().like(123), /HTTP 500.*可能已经执行/);
+});
+
+it("图片重定向不能离开白名单，下载有大小上限", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response(null, { status: 302, headers: { location: "http://127.0.0.1/private" } }); };
+  await assert.rejects(() => client().downloadImage("http://example.test/image/a"), /白名单/);
+  assert.equal(calls, 1);
+  globalThis.fetch = async () => new Response(new Uint8Array(20 * 1024 * 1024 + 1), { headers: { "content-type": "image/png" } });
+  await assert.rejects(() => client().downloadImage("http://example.test/image/a"), /大小上限/);
+});
+
 it("写操作只对确定未建立连接的错误重试", async () => {
   let calls = 0;
   globalThis.fetch = async () => { calls++; if (calls === 1) throw networkError("ECONNREFUSED"); return ok(); };
