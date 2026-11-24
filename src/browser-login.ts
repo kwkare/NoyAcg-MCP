@@ -1,4 +1,6 @@
-import { NoyError } from "./errors.js";
+import { NoyClient } from "./client.js";
+import { loadConfig } from "./config.js";
+import { NoyAuthError, NoyError } from "./errors.js";
 
 /**
  * 浏览器登录：打开一个真实的 Chrome 窗口，让用户自己输入账号密码，
@@ -61,24 +63,14 @@ async function loadPlaywright(): Promise<any> {
 }
 
 async function verifyCookie(baseUrl: string, cookie: string): Promise<{ uid?: number; username?: string } | null> {
+  const client = new NoyClient(loadConfig({ NOY_BASE_URL: baseUrl, NOY_SESSION: cookie, NOY_TIMEOUT_MS: "10000" }));
   try {
-    const res = await fetch(`${baseUrl}/api/v3/userinfo`, {
-      method: "POST",
-      headers: {
-        cookie: `NOY_SESSION=${cookie}`,
-        accept: "application/json",
-        "content-type": "application/x-www-form-urlencoded",
-        "allow-adult": "false",
-        origin: baseUrl,
-        referer: `${baseUrl}/`,
-      },
-      signal: AbortSignal.timeout(10_000),
-    });
-    const payload = (await res.json()) as Record<string, any>;
+    const payload = await client.userinfo();
     if (payload.status !== "ok") return null;
     return { uid: payload.userinfo?.Uid, username: payload.userinfo?.Username };
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof NoyAuthError) return null;
+    throw err;
   }
 }
 
@@ -285,7 +277,13 @@ export async function openLoginBrowser(options: BrowserLoginOptions): Promise<Lo
   if (!headless) {
     const probe = await tryLaunch(chromium, options, true, channels, failures);
     if (probe) {
-      const existing = await readValidSession(probe.context, options.baseUrl);
+      let existing: Awaited<ReturnType<typeof readValidSession>>;
+      try {
+        existing = await readValidSession(probe.context, options.baseUrl);
+      } catch (err) {
+        await probe.context.close().catch(() => undefined);
+        throw err;
+      }
       if (existing) {
         await persistCookie(probe.context, { name: "NOY_SESSION", value: existing.cookie, domain: new URL(options.baseUrl).hostname, path: "/" }).catch(() => undefined);
         const page = probe.context.pages()[0] ?? (await probe.context.newPage());
@@ -306,7 +304,19 @@ export async function openLoginBrowser(options: BrowserLoginOptions): Promise<Lo
   if (!launched) throw browserHelp(failures);
 
   const page = launched.context.pages()[0] ?? (await launched.context.newPage());
-  await page.goto(`${options.baseUrl}/user`, { waitUntil: "domcontentloaded", timeout: 20_000 }).catch(() => undefined);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await page.goto(`${options.baseUrl}/user`, { waitUntil: "domcontentloaded", timeout: 20_000 });
+      if (response && (response.status() === 429 || response.status() >= 500)) throw new NoyError(`HTTP ${response.status()}`);
+      break;
+    } catch (err) {
+      if (attempt === 2) {
+        await launched.context.close().catch(() => undefined);
+        throw new NoyError(`打开登录页面失败（尝试 3 次）：${String(err)}`);
+      }
+      await sleep(500 * (attempt + 1));
+    }
+  }
   await page.bringToFront().catch(() => undefined);
   options.onStatus?.(`已打开 ${launched.channel}，请在窗口里登录 noymanga.com`);
 

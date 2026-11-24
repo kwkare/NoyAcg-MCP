@@ -10,7 +10,7 @@ export interface RequestOptions {
   /** allow-adult 请求头；不传则用配置里的默认值 */
   adult?: boolean;
   timeoutMs?: number;
-  /** 只对只读请求开启重试 */
+  /** 标记无副作用的请求，可在响应不确定时重试 */
   retry?: number;
 }
 
@@ -48,7 +48,7 @@ function describe(err: unknown): string {
  * 设计要点：
  * - 业务状态藏在响应体的 `status` 里，HTTP 码几乎恒为 200，所以 `status === 'login'` 才抛鉴权错误；
  * - 签到接口的 `status` 是**数字**（200/500），不能按字符串判断；
- * - 写操作不重试（发帖 / 点赞 / 徽章开关都不幂等）；
+ * - 写操作仅在确定连接尚未建立时重试，避免重复提交；
  * - 上传走独立域名，**不带 Cookie**，只带一次性 token。
  */
 export class NoyClient {
@@ -76,25 +76,32 @@ export class NoyClient {
   }
 
   private async request(url: string, init: RequestInit, opts: RequestOptions): Promise<Response> {
-    const retries = opts.retry ?? 0;
+    const retries = 2;
+    const safe = opts.retry !== undefined || init.method === "GET";
     const timeout = opts.timeoutMs ?? this.cfg.timeoutMs;
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
         const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeout) });
-        if (res.status >= 500 && attempt < retries) {
-          lastError = new NoyError(`HTTP ${res.status}`);
-          await sleep(500 * (attempt + 1));
-          continue;
+        if (safe && (res.status === 429 || res.status >= 500)) {
+          await res.body?.cancel();
+          throw new NoyError(`HTTP ${res.status}`);
         }
-        return res;
+        if (!res.ok) return res;
+        // 响应头到达后仍可能超时或断线，完整读取后才算成功。
+        const data = await res.arrayBuffer();
+        return new Response([204, 205, 304].includes(res.status) ? null : data, { status: res.status, statusText: res.statusText, headers: res.headers });
       } catch (err) {
         lastError = err;
-        if (attempt < retries) {
+        const code = (err as { cause?: { code?: string } })?.cause?.code;
+        const beforeConnect = ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"].includes(code ?? "");
+        if (attempt < retries && (safe || beforeConnect)) {
           await sleep(500 * (attempt + 1));
           continue;
         }
+        const uncertain = !safe && !beforeConnect ? "；写操作结果不确定，请先检查站点状态，避免重复提交" : "";
+        throw new NoyError(`请求失败：${url}（尝试 ${attempt + 1} 次）—— ${describe(lastError)}${uncertain}`);
       }
     }
     throw new NoyError(`请求失败：${url} —— ${describe(lastError)}`);

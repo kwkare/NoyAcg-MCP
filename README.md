@@ -14,6 +14,7 @@ agent：今天热帖是……（附带评论里在吵什么）
 
 ## 特性
 
+- **请求自动重试**：只读请求遇到网络错误、超时、HTTP 429 或 5xx 时最多重试两次；写操作仅在确定连接尚未建立时重试，结果不确定时提示先检查站点状态
 - **浏览器登录**：`noy_browser_login` 打开独立 Chrome 窗口，用户自己登录，自动抓 `NOY_SESSION` 并保存，**当前进程立刻生效**
 - **24 个任务级工具**：不是一个端点一个工具，而是「看帖」「发评论」「签到」这种完成一件事的工具
 - **6 个资源**（`noy://`）：主页资料、首页榜单、最新帖、未读数、表情包代码表，可按需加载 / 缓存
@@ -95,8 +96,8 @@ node dist/index.js login --timeout 120
 | `NOY_ALLOW_ADULT` | `false` | 内容分级默认值；工具参数 `adult` 可逐次覆盖 |
 | `NOY_READONLY` | `false` | `true` 时**只注册只读工具**，写操作从工具列表里消失 |
 | `NOY_AUDIT_LOG` | `~/.noyacg-mcp/audit.jsonl` | 写操作审计日志；设成 `off` 关闭 |
-| `NOY_TIMEOUT_MS` | `30000` | 普通请求超时 |
-| `NOY_UPLOAD_TIMEOUT_MS` | `120000` | 图床上传超时（服务端会转码，比较慢） |
+| `NOY_TIMEOUT_MS` | `30000` | 普通请求每次尝试的超时 |
+| `NOY_UPLOAD_TIMEOUT_MS` | `120000` | 图床上传及下载每次尝试的超时（服务端会转码，比较慢） |
 | `NOY_MAX_UPLOAD_MB` | `20` | 单张图片大小上限 |
 | `NOY_ALLOW_PASSWORD_LOGIN` | `false` | `true` 才注册 `noy_login`（见下方安全说明） |
 | `NOY_BASE_URL` / `NOY_BUCKET_URL` | 官方域名 | 指向自建 / 测试环境时用 |
