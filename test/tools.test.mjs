@@ -380,6 +380,45 @@ describe("tools 集成（假站点）", () => {
     assert.equal(site.state.calls.filter((c) => c.path === "/api/v3/remove_content").length, before);
   });
 
+  it("发帖和评论长度限制包含空格，恰好上限可提交", async () => {
+    const callsBefore = site.state.calls.length;
+    for (const [name, args, pattern] of [
+      ["noy_create_post", { title: "标题" + " ".repeat(35), content: "正文" }, /标题超过 36 字符限制.*37/],
+      ["noy_create_post", { title: "标题", content: "正文" + " ".repeat(2047) }, /正文超过 2048 字符限制.*2049/],
+      ["noy_comment", { post_id: 78930, text: "评" + " ".repeat(128) }, /评论超过 128 字符限制.*129/],
+      ["noy_edit_post", { post_id: 78930, title: "字".repeat(37) }, /标题超过 36 字符限制/],
+      ["noy_edit_post", { post_id: 78930, content: "字".repeat(2049) }, /正文超过 2048 字符限制/],
+    ]) {
+      const result = await server.call(name, args);
+      assert.equal(result.isError, true, result.text);
+      assert.match(result.text, pattern);
+    }
+    assert.equal(site.state.calls.length, callsBefore, "超限时不应访问站点");
+    const post = await server.call("noy_create_post", { title: "字".repeat(35) + " ", content: "文".repeat(2047) + " " });
+    assert.equal(post.isError, false, post.text);
+    const comment = await server.call("noy_comment", { post_id: 78930, text: "评".repeat(127) + " " });
+    assert.equal(comment.isError, false, comment.text);
+  });
+
+  it("帖文图片限制 3 MiB，超限时上传前拒绝", async () => {
+    const allowed = join(workDir, "limit.png");
+    const oversized = join(workDir, "oversized.png");
+    await writeFile(allowed, Buffer.alloc(3 * 1024 * 1024));
+    await writeFile(oversized, Buffer.alloc(3 * 1024 * 1024 + 1));
+    const before = site.state.calls.filter((c) => c.path === "/api/upload_image").length;
+    const bad = await server.call("noy_upload_images", { paths: [allowed, oversized] });
+    assert.equal(bad.isError, true, bad.text);
+    assert.match(bad.text, /帖文图片超过大小限制.*3145729.*3145728/);
+    assert.equal(site.state.calls.filter((c) => c.path === "/api/upload_image").length, before);
+    const create = await server.call("noy_create_post", { title: "图片", content: "测试", images: [imagePath, oversized] });
+    assert.equal(create.isError, true, create.text);
+    assert.match(create.text, /帖文图片超过大小限制/);
+    assert.equal(site.state.calls.filter((c) => c.path === "/api/upload_image").length, before);
+    const good = await server.call("noy_upload_images", { paths: [allowed] });
+    assert.equal(good.isError, false, good.text);
+    assert.equal(site.state.calls.filter((c) => c.path === "/api/upload_image").length, before + 1);
+  });
+
   it("noy_logout(revoke=true)：吊销服务端会话并清空当前登录态", async () => {
     const out = await server.call("noy_logout", { revoke: true });
     assert.equal(out.isError, false, out.text);

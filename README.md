@@ -100,7 +100,7 @@ node dist/index.js login --timeout 120
 | `NOY_AUDIT_LOG` | `~/.noyacg-mcp/audit.jsonl` | 写操作审计日志；设成 `off` 关闭 |
 | `NOY_TIMEOUT_MS` | `30000` | 普通请求每次尝试的超时 |
 | `NOY_UPLOAD_TIMEOUT_MS` | `120000` | 图床上传及下载每次尝试的超时（服务端会转码，比较慢） |
-| `NOY_MAX_UPLOAD_MB` | `20` | 单张上传图片大小上限；下载图片固定上限为 20 MiB |
+| `NOY_MAX_UPLOAD_MB` | `20` | 单张图片上传的配置上限；帖文图片还受 3 MiB 上限约束，取两者中较小值。下载图片固定上限为 20 MiB |
 | `NOY_COMMENT_COOLDOWN_MS` | `25000` | 同一进程内两次成功评论之间的最小间隔，须为正数 |
 | `NOY_IMAGE_CACHE_DIR` | `~/.noyacg-mcp/images` | 下载图片的本地缓存目录 |
 | `NOY_ALLOW_PASSWORD_LOGIN` | `false` | `true` 才注册 `noy_login`（见下方安全说明） |
@@ -137,9 +137,9 @@ node dist/index.js login --timeout 120
 
 | 工具 | 作用 | 备注 |
 | --- | --- | --- |
-| `noy_upload_images` | 本地图片 → 图床，返回 `image/<file>` | 服务端统一转 webp |
-| `noy_create_post` | 发帖（可带图） | 发帖后尝试回查帖子 ID；可用 `noy_delete_post` 删除自己的帖子 |
-| `noy_comment` | 顶层评论 / 楼中楼回复 | 发出后尝试回读新 rid；可用 `noy_delete_comment` 删除符合校验条件的评论 |
+| `noy_upload_images` | 本地图片 → 图床，返回 `image/<file>` | 单张最多 3 MiB；服务端统一转 webp |
+| `noy_create_post` | 发帖（可带图） | 标题最多 36 字符、正文最多 2048 字符、单张图片最多 3 MiB；可用 `noy_delete_post` 删除自己的帖子 |
+| `noy_comment` | 顶层评论 / 楼中楼回复 | 最多 128 字符；尝试回读新 rid，符合校验条件的评论可删除 |
 | `noy_edit_post` | 改标题 / 正文 | 改不了图片，且会覆盖原文 |
 | `noy_like_post` | 点赞 / 取消 | 先读后写，`action=like\|unlike\|toggle` |
 | `noy_checkin` | 每日签到 | 已签则跳过，返回积分变化 |
@@ -147,6 +147,8 @@ node dist/index.js login --timeout 120
 | `noy_set_profile_image` | 设置头像 / 主页背景图 | 走 `upload_avatar` / `upload_bg`；**覆盖**旧图，会返回旧地址便于回滚 |
 | `noy_delete_post` | 删除自己的帖子 | `remove_content(item=community)`；必须 `confirm=true`；服务端不校验 id，结果以回读为准 |
 | `noy_delete_comment` | 删除自己的评论 | 必须 `confirm=true`，且目标须出现在当前可见评论或回复预览中并属于当前账号 |
+
+文字长度按 UTF-16 代码单元计算，空格、换行和表情代码都计入；例如一般 emoji 占两个代码单元。编辑帖子时同样检查标题和正文。已上传的图片引用无法在本地检查原文件大小。
 
 ## 资源
 

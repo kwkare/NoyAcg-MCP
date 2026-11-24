@@ -17,6 +17,22 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 const MAX_IMAGES = 9;
+const POST_IMAGE_LIMIT = 3 * 1024 * 1024;
+
+/** 按 UTF-16 单元计数，不去除空格。 */
+function checkTextLength(value: string, field: string, limit: number): void {
+  if (value.length > limit) {
+    throw new NoyError(`${field}超过 ${limit} 字符限制：当前 ${value.length} 字符（空格计入；按 UTF-16 计数）。请缩短后重试。`);
+  }
+}
+
+async function checkImageSize(filePath: string, maxBytes: number, postImage: boolean): Promise<void> {
+  const info = await stat(filePath).catch(() => null);
+  if (!info?.isFile()) throw new NoyError(`找不到文件：${filePath}`);
+  if (info.size > maxBytes) {
+    throw new NoyError(`${postImage ? "帖文图片" : "图片"}超过大小限制：${filePath}（${info.size} 字节，上限 ${maxBytes} 字节${postImage && maxBytes === POST_IMAGE_LIMIT ? "，即 3 MiB" : ""}）。请压缩后重试。`);
+  }
+}
 
 /** 上一次成功发评论的时间，用来避开站点的评论冷却 */
 let lastCommentAt = 0;
@@ -57,20 +73,18 @@ async function uploadLocalFiles(
   options: { path?: string; expectFile?: boolean; adult?: boolean } = {},
 ): Promise<Uploaded[]> {
   const uploaded: Uploaded[] = [];
+  const postImage = !options.path || options.path === "/api/upload_image";
+  const maxBytes = postImage ? Math.min(ctx.cfg.maxUploadBytes, POST_IMAGE_LIMIT) : ctx.cfg.maxUploadBytes;
+  for (const raw of paths) await checkImageSize(resolve(raw), maxBytes, postImage);
   for (const raw of paths) {
     try {
     const filePath = resolve(raw);
-    const info = await stat(filePath).catch(() => null);
-    if (!info?.isFile()) throw new NoyError(`找不到文件：${filePath}`);
-    if (info.size > ctx.cfg.maxUploadBytes) {
-      throw new NoyError(
-        `图片太大：${filePath}（${(info.size / 1024 / 1024).toFixed(1)} MB，上限 ${(ctx.cfg.maxUploadBytes / 1024 / 1024).toFixed(0)} MB）`,
-      );
-    }
+    await checkImageSize(filePath, maxBytes, postImage);
     const mime = MIME_BY_EXT[extname(filePath).toLowerCase()];
     if (!mime) throw new NoyError(`不支持的格式：${filePath}（支持 jpg / jpeg / png / webp / gif）`);
 
     const data = await readFile(filePath);
+    if (data.byteLength > maxBytes) throw new NoyError(`${postImage ? "帖文图片" : "图片"}超过大小限制：${filePath}（${data.byteLength} 字节，上限 ${maxBytes} 字节）。请压缩后重试。`);
     const result = await ctx.client.uploadImage({
       data,
       fileName: basename(filePath),
@@ -145,7 +159,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
     {
       title: "上传图片到图床",
       description:
-        "把本地图片传到 noymanga 的图床，返回发帖可用的 `image/<file>` 引用。图片一律被服务端转成 webp。" +
+        "把本地图片传到 noymanga 的图床，返回发帖可用的 `image/<file>` 引用；单张不超过 3 MiB。图片一律被服务端转成 webp。" +
         "这一步本身是写操作（占用图床空间），但不会在社区产生内容。发帖时再引用返回的 file 即可，无需重复上传。",
       inputSchema: {
         paths: z.array(z.string().min(1)).min(1).max(MAX_IMAGES).describe("本地图片绝对路径或相对当前工作目录的路径"),
@@ -174,10 +188,10 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       description:
         "在社区发一条帖子，可选带图。发出后可用 noy_delete_post 删除自己的帖子，删除不可恢复；" +
         "⚠️ 图片是否打码由服务端判定（spoiler），客户端无法指定；发帖不返回帖子 ID，本工具会去列表里回查。" +
-        "正文支持表情包代码（如 `[noygirl:yeah]`）与 `NID<书籍ID>` 引用。",
+        "正文支持表情包代码（如 `[noygirl:yeah]`）与 `NID<书籍ID>` 引用。标题最多 36 字符、正文最多 2048 字符（空格计入，按 UTF-16 计数），单张帖文图片不超过 3 MiB。",
       inputSchema: {
-        title: z.string().min(1).max(120).describe("标题"),
-        content: z.string().min(1).max(5000).describe("正文，纯文本 + 表情包代码"),
+        title: z.string().min(1).describe("标题，最多 36 字符，空格计入（UTF-16）"),
+        content: z.string().min(1).describe("正文最多 2048 字符，空格计入（UTF-16）；支持表情包代码"),
         images: z
           .array(z.string().min(1))
           .max(MAX_IMAGES)
@@ -190,7 +204,14 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
     },
     async ({ title, content, images, platform, adult }) =>
       run(async () => {
+        checkTextLength(title, "标题", 36);
+        checkTextLength(content, "正文", 2048);
         const images_ = images ?? [];
+        // 先检查全部本地图片，避免后面的文件过大时已经上传了前面的图片。
+        for (const item of images_) {
+          const info = await stat(resolve(item)).catch(() => null);
+          if (info?.isFile()) await checkImageSize(resolve(item), Math.min(cfg.maxUploadBytes, POST_IMAGE_LIMIT), true);
+        }
         const imageRefs: string[] = [];
         const uploaded: Uploaded[] = [];
 
@@ -257,12 +278,12 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       title: "发评论 / 回复评论",
       description:
         "在帖子下发评论。不带 reply_to_rid 是顶层评论（reply_id=-1）；带 reply_to_rid 是楼中楼回复。" +
-        "正文支持表情包代码。自己的评论可在符合归属校验时使用 noy_delete_comment 删除；接口不返回评论 ID，本工具会回读列表找出新 rid。\n" +
+        "正文支持表情包代码，最多 128 字符（空格计入，按 UTF-16 计数）。自己的评论可在符合归属校验时使用 noy_delete_comment 删除；接口不返回评论 ID，本工具会回读列表找出新 rid。\n" +
         "⏳ 站点对评论有**约 25 秒冷却**：连续发第二条会失败。本工具会自动等待到冷却结束再提交（最多约 25 秒），" +
         "不需要 agent 自己 sleep；但连续发多条时请预期每次调用会变慢。",
       inputSchema: {
         post_id: z.coerce.number().int().positive().describe("帖子 ID"),
-        text: z.string().min(1).max(2000).describe("评论正文"),
+        text: z.string().min(1).describe("评论最多 128 字符，空格计入（UTF-16）"),
         reply_to_rid: z.coerce
           .number()
           .int()
@@ -276,6 +297,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
     },
     async ({ post_id, text, reply_to_rid, platform, adult }) =>
       run(() => withLock(client, "comment", async () => {
+        checkTextLength(text, "评论", 128);
         const before = await client.postDetail(post_id, adult);
         const existing = collectRids(before.data?.comments ?? []);
         const me = (await client.userinfo(adult)).userinfo ?? {};
@@ -353,8 +375,8 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         "编辑不会把帖子顶到前面。⚠️ 会覆盖原内容，请先 noy_read_post 确认。",
       inputSchema: {
         post_id: z.coerce.number().int().positive(),
-        title: z.string().min(1).max(120).optional(),
-        content: z.string().min(1).max(5000).optional(),
+        title: z.string().min(1).optional().describe("标题最多 36 字符，空格计入（UTF-16）"),
+        content: z.string().min(1).optional().describe("正文最多 2048 字符，空格计入（UTF-16）"),
         adult: adultParam,
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
@@ -364,9 +386,13 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         if (title === undefined && content === undefined) {
           throw new NoyError("至少提供 title 或 content 之一");
         }
+        if (title !== undefined) checkTextLength(title, "标题", 36);
+        if (content !== undefined) checkTextLength(content, "正文", 2048);
         const before = (await client.postDetail(post_id, adult)).data?.post ?? {};
         const nextTitle = title ?? String(before.title ?? "");
         const nextContent = content ?? String(before.content ?? "");
+        checkTextLength(nextTitle, "标题", 36);
+        checkTextLength(nextContent, "正文", 2048);
         const warnings = content ? stickerWarnings(content) : [];
 
         const payload = await client.editPost({ postId: post_id, title: nextTitle, content: nextContent, adult });
