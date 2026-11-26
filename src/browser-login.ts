@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { NoyClient } from "./client.js";
 import { loadConfig } from "./config.js";
 import { NoyAuthError, NoyError } from "./errors.js";
@@ -51,6 +53,27 @@ interface Launched {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const execFileAsync = promisify(execFile);
+
+/** 无图形环境的服务可从当前用户 systemd 会话获取桌面连接信息。 */
+async function browserEnvironment(headless: boolean): Promise<NodeJS.ProcessEnv> {
+  const env = { ...process.env };
+  if (headless || process.platform !== "linux" || env.DISPLAY || env.WAYLAND_DISPLAY) return env;
+  try {
+    const { stdout } = await execFileAsync("systemctl", ["--user", "show-environment"], { timeout: 3000, maxBuffer: 64 * 1024 });
+    const allowed = new Set(["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE", "XAUTHORITY"]);
+    for (const line of stdout.split("\n")) {
+      const index = line.indexOf("=");
+      if (index < 0) continue;
+      const key = line.slice(0, index);
+      const value = line.slice(index + 1);
+      if (allowed.has(key) && value && !env[key]) env[key] = value;
+    }
+  } catch {
+    // 非 systemd 环境按原环境启动，由浏览器返回具体错误。
+  }
+  return env;
+}
 
 async function loadPlaywright(): Promise<any> {
   try {
@@ -156,10 +179,12 @@ async function tryLaunch(
   const args = ["--start-maximized", "--no-first-run", "--no-default-browser-check"];
   if (process.platform === "linux") args.push("--password-store=basic");
 
+  const env = await browserEnvironment(headless);
   for (const channel of channels) {
     try {
       const context = await chromium.launchPersistentContext(options.profileDir, {
         headless,
+        env,
         channel: channel || undefined,
         viewport: null,
         locale: "zh-CN",
@@ -169,11 +194,13 @@ async function tryLaunch(
       });
       return { context, channel: channel || "bundled-chromium" };
     } catch (err) {
-      failures.push(
-        `${channel || "bundled-chromium"}${headless ? " (headless)" : ""}: ${
-          err instanceof Error ? err.message.split("\n")[0] : String(err)
-        }`,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      const hint = /Missing X server|without having a XServer|\$DISPLAY/i.test(message)
+        ? "；没有可用的桌面显示环境（DISPLAY / WAYLAND_DISPLAY）"
+        : /SingletonLock|profile.*in use|ProcessSingleton/i.test(message)
+          ? "；浏览器登录配置目录可能正被其他进程占用"
+          : "";
+      failures.push(`${channel || "bundled-chromium"}${headless ? " (headless)" : ""}: ${message.split("\n")[0]}${hint}`);
     }
   }
   return null;
@@ -182,11 +209,11 @@ async function tryLaunch(
 function browserHelp(failures: string[]): NoyError {
   return new NoyError(
     [
-      "没能启动浏览器（Chrome / Edge 都没找到）。",
-      "解决办法（任选其一）：",
-      "1. 安装 Google Chrome 后重试；",
-      "2. 在本项目里执行 `npx playwright install chromium` 下载内置浏览器；",
-      "3. 用 `NOY_BROWSER=msedge` 指定 Edge。",
+      "没能启动浏览器。浏览器可能未安装，也可能因桌面环境或配置目录占用而启动失败。",
+      "请根据下方详情检查：",
+      "1. 如果提示缺少显示环境，请确保桌面已登录，或给 MCP 进程配置 DISPLAY / WAYLAND_DISPLAY 和 XDG_RUNTIME_DIR；",
+      "2. 如果提示配置目录被占用，请关闭其他 NoyAcg 登录窗口后重试；",
+      "3. 如果浏览器未安装，请安装 Chrome、Edge，或执行 `npx playwright install chromium`。",
       "",
       "启动失败详情：",
       ...failures.map((line) => `- ${line}`),

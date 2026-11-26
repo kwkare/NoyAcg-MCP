@@ -61,6 +61,7 @@ node dist/index.js login --timeout 120
 - 想换账号：`noy_logout` 再 `login`；想彻底作废这个 cookie：`noyacg-mcp logout --revoke`；
 - Cookie 存到 `~/.noyacg-mcp/session.json`，权限 `0600`；
 - 也可以在对话里让 agent 调 `noy_browser_login`：先 `action=open` 弹窗，登录好后 `action=wait` 保存，**不用重启 MCP**。
+- Linux 上如果 MCP 由后台服务启动且没有桌面环境变量，会尝试从当前用户的 systemd 会话获取显示配置；若仍无法打开窗口，请检查桌面会话及 `DISPLAY` / `WAYLAND_DISPLAY`、`XDG_RUNTIME_DIR`。
 
 > 会话文件里是明文 Cookie，等同账号凭证。别提交到 git、别随手发给别人。
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -182,6 +182,24 @@ describe("浏览器登录（headless Chrome）", () => {
     } finally {
       await handle.close();
     }
+  });
+
+  it("Linux 后台进程可从用户桌面会话恢复显示环境", async (t) => {
+    if (process.platform !== "linux" || !process.env.DISPLAY) return t.skip("需要 Linux 图形桌面");
+    try {
+      const session = execFileSync("systemctl", ["--user", "show-environment"], { encoding: "utf8", timeout: 3000 });
+      if (!/^DISPLAY=.+$/m.test(session) && !/^WAYLAND_DISPLAY=.+$/m.test(session)) return t.skip("用户会话没有显示环境");
+    } catch { return t.skip("没有可用的 systemd 用户会话"); }
+    const childEnv = { ...process.env };
+    for (const key of ["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE"]) delete childEnv[key];
+    const script = `import { openLoginBrowser } from './dist/browser-login.js';
+      const handle = await openLoginBrowser({ baseUrl: process.argv[1], profileDir: process.argv[2], channel: 'chrome' });
+      await handle.close();`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script, stuckSite.base, join(dir, "service-env")], { env: childEnv, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
+    assert.equal(code, 0, stderr);
   });
 
   it("MCP 工具 noy_browser_login 能完成整条链路", async (t) => {
